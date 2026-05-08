@@ -1,0 +1,593 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Life OS Preview</title>
+    <style>
+      :root {
+        color-scheme: dark;
+        --bg: #101114;
+        --panel: #181a1f;
+        --panel-2: #20242b;
+        --line: #343943;
+        --text: #f3f4f6;
+        --muted: #a8b0bd;
+        --soft: #d8dde6;
+        --green: #72d39d;
+        --amber: #e7b96d;
+        --blue: #77b7ff;
+        --red: #ee847d;
+        --violet: #a994ff;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      body {
+        margin: 0;
+        min-height: 100vh;
+        background:
+          linear-gradient(120deg, rgba(114, 211, 157, 0.08), transparent 34%),
+          linear-gradient(240deg, rgba(119, 183, 255, 0.08), transparent 40%),
+          var(--bg);
+        color: var(--text);
+        font-family:
+          Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont,
+          "Segoe UI", sans-serif;
+        letter-spacing: 0;
+      }
+
+      .app-shell {
+        display: grid;
+        grid-template-columns: 232px minmax(0, 1fr) 340px;
+        min-height: 100vh;
+      }
+
+      aside {
+        border-right: 1px solid var(--line);
+        background: rgba(16, 17, 20, 0.84);
+        padding: 22px 18px;
+      }
+
+      .brand {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        margin-bottom: 26px;
+      }
+
+      .mark {
+        display: grid;
+        width: 36px;
+        height: 36px;
+        place-items: center;
+        border: 1px solid var(--line);
+        background: var(--panel-2);
+        border-radius: 8px;
+        color: var(--green);
+        font-weight: 800;
+      }
+
+      h1,
+      h2,
+      h3,
+      p {
+        margin: 0;
+      }
+
+      .brand h1 {
+        font-size: 18px;
+        line-height: 1.1;
+      }
+
+      .brand p {
+        color: var(--muted);
+        font-size: 12px;
+        margin-top: 3px;
+      }
+
+      nav {
+        display: grid;
+        gap: 6px;
+      }
+
+      .nav-item {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        min-height: 40px;
+        border-radius: 8px;
+        padding: 0 10px;
+        color: var(--muted);
+        font-size: 14px;
+      }
+
+      .nav-item.active {
+        background: var(--panel-2);
+        color: var(--text);
+      }
+
+      .dot {
+        width: 8px;
+        height: 8px;
+        border-radius: 50%;
+        background: var(--muted);
+      }
+
+      .active .dot {
+        background: var(--green);
+      }
+
+      main {
+        min-width: 0;
+        padding: 26px 30px 30px;
+      }
+
+      .topbar {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 16px;
+        margin-bottom: 24px;
+      }
+
+      .eyebrow {
+        color: var(--muted);
+        font-size: 13px;
+        margin-bottom: 6px;
+      }
+
+      .topbar h2 {
+        font-size: 32px;
+        line-height: 1.08;
+      }
+
+      .capture {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        min-width: 280px;
+        min-height: 46px;
+        padding: 0 14px;
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        background: var(--panel);
+        color: var(--muted);
+      }
+
+      .capture span:first-child {
+        display: grid;
+        place-items: center;
+        width: 24px;
+        height: 24px;
+        color: var(--green);
+        font-size: 20px;
+      }
+
+      .grid {
+        display: grid;
+        grid-template-columns: minmax(0, 1.2fr) minmax(280px, 0.8fr);
+        gap: 18px;
+      }
+
+      .section {
+        border-top: 1px solid var(--line);
+        padding-top: 18px;
+      }
+
+      .section + .section {
+        margin-top: 24px;
+      }
+
+      .section-head {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+        margin-bottom: 12px;
+      }
+
+      .section-head h3 {
+        font-size: 15px;
+      }
+
+      .section-head p,
+      .small {
+        color: var(--muted);
+        font-size: 12px;
+      }
+
+      .task-list,
+      .timeline,
+      .project-list {
+        display: grid;
+        gap: 10px;
+      }
+
+      .task,
+      .block,
+      .metric,
+      .insight,
+      .project {
+        border: 1px solid var(--line);
+        background: rgba(24, 26, 31, 0.88);
+        border-radius: 8px;
+      }
+
+      .task {
+        display: grid;
+        grid-template-columns: 18px minmax(0, 1fr) auto;
+        align-items: center;
+        gap: 12px;
+        min-height: 62px;
+        padding: 12px;
+      }
+
+      .check {
+        width: 18px;
+        height: 18px;
+        border: 2px solid var(--line);
+        border-radius: 5px;
+      }
+
+      .task strong {
+        display: block;
+        font-size: 14px;
+        margin-bottom: 4px;
+      }
+
+      .task p {
+        color: var(--muted);
+        font-size: 12px;
+      }
+
+      .tag {
+        border: 1px solid var(--line);
+        border-radius: 999px;
+        color: var(--soft);
+        font-size: 12px;
+        padding: 5px 8px;
+        white-space: nowrap;
+      }
+
+      .critical {
+        color: var(--red);
+      }
+
+      .high {
+        color: var(--amber);
+      }
+
+      .block {
+        display: grid;
+        grid-template-columns: 64px minmax(0, 1fr);
+        gap: 12px;
+        padding: 12px;
+      }
+
+      .time {
+        color: var(--blue);
+        font-size: 12px;
+        font-weight: 700;
+      }
+
+      .block strong {
+        display: block;
+        font-size: 14px;
+      }
+
+      .block p {
+        color: var(--muted);
+        font-size: 12px;
+        margin-top: 4px;
+      }
+
+      .side {
+        border-left: 1px solid var(--line);
+        background: rgba(16, 17, 20, 0.72);
+        padding: 26px 22px;
+      }
+
+      .metric-grid {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 10px;
+      }
+
+      .metric {
+        min-height: 96px;
+        padding: 14px;
+      }
+
+      .metric b {
+        display: block;
+        font-size: 26px;
+        line-height: 1;
+        margin: 8px 0;
+      }
+
+      .metric p {
+        color: var(--muted);
+        font-size: 12px;
+      }
+
+      .insight {
+        padding: 16px;
+        border-color: rgba(114, 211, 157, 0.38);
+        background: rgba(114, 211, 157, 0.09);
+      }
+
+      .insight h3 {
+        font-size: 14px;
+        margin-bottom: 8px;
+      }
+
+      .insight p {
+        color: var(--soft);
+        font-size: 14px;
+        line-height: 1.45;
+      }
+
+      .project {
+        padding: 13px;
+      }
+
+      .project-row {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 10px;
+        margin-bottom: 10px;
+      }
+
+      .bar {
+        height: 7px;
+        overflow: hidden;
+        border-radius: 999px;
+        background: #303640;
+      }
+
+      .bar span {
+        display: block;
+        height: 100%;
+        border-radius: inherit;
+        background: var(--violet);
+      }
+
+      .journal-strip {
+        display: grid;
+        grid-template-columns: repeat(5, 1fr);
+        gap: 8px;
+      }
+
+      .mood {
+        display: grid;
+        min-height: 58px;
+        place-items: center;
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        background: var(--panel);
+        color: var(--soft);
+        font-size: 13px;
+      }
+
+      @media (max-width: 1040px) {
+        .app-shell {
+          grid-template-columns: 76px minmax(0, 1fr);
+        }
+
+        aside {
+          padding: 18px 12px;
+        }
+
+        .brand div:last-child,
+        .nav-item span:last-child {
+          display: none;
+        }
+
+        .nav-item {
+          justify-content: center;
+        }
+
+        .side {
+          grid-column: 2;
+          border-left: 0;
+          border-top: 1px solid var(--line);
+        }
+      }
+
+      @media (max-width: 760px) {
+        .app-shell {
+          display: block;
+        }
+
+        aside {
+          display: none;
+        }
+
+        main,
+        .side {
+          padding: 18px;
+        }
+
+        .topbar,
+        .grid {
+          display: grid;
+          grid-template-columns: 1fr;
+        }
+
+        .topbar h2 {
+          font-size: 26px;
+        }
+
+        .capture {
+          min-width: 0;
+          width: 100%;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <div class="app-shell">
+      <aside>
+        <div class="brand">
+          <div class="mark">L</div>
+          <div>
+            <h1>Life OS</h1>
+            <p>Orchestrated day</p>
+          </div>
+        </div>
+        <nav aria-label="Primary">
+          <div class="nav-item active"><span class="dot"></span><span>Today</span></div>
+          <div class="nav-item"><span class="dot"></span><span>Planner</span></div>
+          <div class="nav-item"><span class="dot"></span><span>Focus</span></div>
+          <div class="nav-item"><span class="dot"></span><span>Journal</span></div>
+          <div class="nav-item"><span class="dot"></span><span>Life Lens</span></div>
+        </nav>
+      </aside>
+
+      <main>
+        <header class="topbar">
+          <div>
+            <p class="eyebrow">Tuesday, May 5</p>
+            <h2>3 focused blocks, 2 overdue decisions</h2>
+          </div>
+          <div class="capture" aria-label="Quick capture">
+            <span>+</span>
+            <span>Capture task, mood, reminder, or idea</span>
+          </div>
+        </header>
+
+        <div class="grid">
+          <section>
+            <div class="section">
+              <div class="section-head">
+                <h3>Planner Queue</h3>
+                <p>Next 5 tasks</p>
+              </div>
+              <div class="task-list">
+                <article class="task">
+                  <span class="check"></span>
+                  <div>
+                    <strong>Deep work: report draft</strong>
+                    <p>Project: Work Rebrand · 2 pomodoros · high energy</p>
+                  </div>
+                  <span class="tag critical">critical</span>
+                </article>
+                <article class="task">
+                  <span class="check"></span>
+                  <div>
+                    <strong>Reply to Sarah about launch dates</strong>
+                    <p>Due 4:00 PM · calendar-linked</p>
+                  </div>
+                  <span class="tag high">high</span>
+                </article>
+                <article class="task">
+                  <span class="check"></span>
+                  <div>
+                    <strong>Sketch onboarding capture flow</strong>
+                    <p>Life OS mobile · 1 pomodoro</p>
+                  </div>
+                  <span class="tag">medium</span>
+                </article>
+              </div>
+            </div>
+
+            <div class="section">
+              <div class="section-head">
+                <h3>Calendar Blocks</h3>
+                <p>Free time: 3h 10m</p>
+              </div>
+              <div class="timeline">
+                <article class="block">
+                  <span class="time">09:00</span>
+                  <div>
+                    <strong>Standup</strong>
+                    <p>External meeting · 30m</p>
+                  </div>
+                </article>
+                <article class="block">
+                  <span class="time">10:30</span>
+                  <div>
+                    <strong>AI-optimized focus block</strong>
+                    <p>Report draft placed during energy peak</p>
+                  </div>
+                </article>
+                <article class="block">
+                  <span class="time">14:00</span>
+                  <div>
+                    <strong>Review quick captures</strong>
+                    <p>3 confirmations waiting</p>
+                  </div>
+                </article>
+              </div>
+            </div>
+          </section>
+
+          <section>
+            <div class="section">
+              <div class="section-head">
+                <h3>Journal Pulse</h3>
+                <p>5 day trend</p>
+              </div>
+              <div class="journal-strip">
+                <div class="mood">-1</div>
+                <div class="mood">+2</div>
+                <div class="mood">+1</div>
+                <div class="mood">+3</div>
+                <div class="mood">+2</div>
+              </div>
+            </div>
+
+            <div class="section">
+              <div class="section-head">
+                <h3>Projects</h3>
+                <p>Life Lens</p>
+              </div>
+              <div class="project-list">
+                <article class="project">
+                  <div class="project-row">
+                    <strong>Work Rebrand</strong>
+                    <span class="small">68%</span>
+                  </div>
+                  <div class="bar"><span style="width: 68%"></span></div>
+                </article>
+                <article class="project">
+                  <div class="project-row">
+                    <strong>Health Reset</strong>
+                    <span class="small">42%</span>
+                  </div>
+                  <div class="bar"><span style="width: 42%; background: var(--green)"></span></div>
+                </article>
+              </div>
+            </div>
+          </section>
+        </div>
+      </main>
+
+      <section class="side">
+        <div class="section">
+          <div class="section-head">
+            <h3>Focus Stats</h3>
+            <p>Today</p>
+          </div>
+          <div class="metric-grid">
+            <div class="metric"><p>Pomodoros</p><b>4</b><p>Goal 6</p></div>
+            <div class="metric"><p>Focus min</p><b>105</b><p>+20% morning lift</p></div>
+            <div class="metric"><p>Mood</p><b>+2</b><p>steady</p></div>
+            <div class="metric"><p>Streak</p><b>8</b><p>journal days</p></div>
+          </div>
+        </div>
+
+        <div class="section">
+          <article class="insight">
+            <h3>AI Insight</h3>
+            <p>Move the report draft to 10:30. You have the cleanest block there and fewer meeting interruptions.</p>
+          </article>
+        </div>
+      </section>
+    </div>
+  </body>
+</html>

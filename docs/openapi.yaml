@@ -1,0 +1,259 @@
+openapi: 3.0.0
+info:
+  title: Life OS API
+  version: 1.0.0
+paths:
+  /auth/register:
+    post:
+      summary: Register new user
+      responses:
+        "201":
+          description: User registered
+  /auth/login:
+    post:
+      summary: Login
+      responses:
+        "200":
+          description: Authenticated
+  /auth/refresh:
+    post:
+      summary: Refresh token
+      responses:
+        "200":
+          description: Token refreshed
+  /v1/today:
+    get:
+      summary: Get today's unified snapshot
+      responses:
+        "200":
+          description: Daily snapshot
+  /v1/tasks:
+    get:
+      summary: List tasks
+      responses:
+        "200":
+          description: Task list
+    post:
+      summary: Create task
+      responses:
+        "201":
+          description: Task created
+  /v1/tasks/{id}:
+    get:
+      summary: Get task
+      parameters:
+        - $ref: "#/components/parameters/Id"
+      responses:
+        "200":
+          description: Task
+    patch:
+      summary: Update task
+      parameters:
+        - $ref: "#/components/parameters/Id"
+      responses:
+        "200":
+          description: Task updated
+    delete:
+      summary: Delete task
+      parameters:
+        - $ref: "#/components/parameters/Id"
+      responses:
+        "204":
+          description: Task deleted
+  /v1/tasks/{id}/complete:
+    post:
+      summary: Mark complete
+      parameters:
+        - $ref: "#/components/parameters/Id"
+      responses:
+        "200":
+          description: Task completed
+  /v1/tasks/bulk:
+    post:
+      summary: Bulk task operations
+      responses:
+        "200":
+          description: Bulk operation result
+  /v1/calendar/blocks:
+    get:
+      summary: Get blocks for range
+      responses:
+        "200":
+          description: Calendar blocks
+    post:
+      summary: Create block
+      responses:
+        "201":
+          description: Calendar block created
+  /v1/calendar/sync:
+    post:
+      summary: Sync with external calendar
+      responses:
+        "202":
+          description: Calendar sync accepted
+  /v1/journal/entries:
+    get:
+      summary: List entries
+      responses:
+        "200":
+          description: Journal entries
+    post:
+      summary: Create entry
+      responses:
+        "201":
+          description: Journal entry created
+  /v1/journal/mood:
+    post:
+      summary: Quick mood log
+      responses:
+        "201":
+          description: Mood logged
+  /v1/journal/insights:
+    get:
+      summary: Get AI-generated insights
+      responses:
+        "200":
+          description: Journal insights
+  /v1/focus/sessions:
+    get:
+      summary: Get active session
+      responses:
+        "200":
+          description: Active session
+    post:
+      summary: Start session
+      responses:
+        "201":
+          description: Focus session started
+  /v1/focus/sessions/{id}/complete:
+    post:
+      summary: Complete session
+      parameters:
+        - $ref: "#/components/parameters/Id"
+      responses:
+        "200":
+          description: Focus session completed
+  /v1/focus/sessions/{id}/abandon:
+    post:
+      summary: Abandon session
+      parameters:
+        - $ref: "#/components/parameters/Id"
+      responses:
+        "200":
+          description: Focus session abandoned
+  /v1/focus/stats:
+    get:
+      summary: Get focus statistics
+      responses:
+        "200":
+          description: Focus statistics
+  /v1/projects:
+    get:
+      summary: List projects
+      responses:
+        "200":
+          description: Projects
+    post:
+      summary: Create project
+      responses:
+        "201":
+          description: Project created
+  /v1/projects/{id}/progress:
+    get:
+      summary: Get project progress
+      parameters:
+        - $ref: "#/components/parameters/Id"
+      responses:
+        "200":
+          description: Project progress
+  /v1/reminders:
+    get:
+      summary: List reminders
+      responses:
+        "200":
+          description: Reminders
+    post:
+      summary: Create reminder
+      responses:
+        "201":
+          description: Reminder created
+  /v1/weekly-reviews:
+    get:
+      summary: List reviews
+      responses:
+        "200":
+          description: Weekly reviews
+    post:
+      summary: Generate review
+      responses:
+        "202":
+          description: Weekly review generation accepted
+  /v1/capture:
+    post:
+      summary: Submit quick capture
+      requestBody:
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              properties:
+                input_type:
+                  type: string
+                  enum: [voice, text, photo]
+                raw_input:
+                  type: string
+                audio:
+                  type: string
+                  format: binary
+                photo:
+                  type: string
+                  format: binary
+      responses:
+        "200":
+          description: Quick capture
+  /v1/capture/{id}/confirm:
+    post:
+      summary: Confirm AI extraction
+      parameters:
+        - $ref: "#/components/parameters/Id"
+      responses:
+        "200":
+          description: Quick capture confirmed
+  /v1/ai/insight:
+    post:
+      summary: Generate insight
+      responses:
+        "200":
+          description: Insight generated
+  /v1/ai/suggest:
+    post:
+      summary: Get suggestion
+      responses:
+        "200":
+          description: Suggestion generated
+  /v1/ai/weekly-review:
+    post:
+      summary: Generate weekly review
+      responses:
+        "200":
+          description: Weekly review generated
+  /v1/sync:
+    get:
+      summary: Pull changes to client
+      responses:
+        "200":
+          description: Sync changes
+    post:
+      summary: Push changes from client
+      responses:
+        "200":
+          description: Sync accepted
+components:
+  parameters:
+    Id:
+      name: id
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid

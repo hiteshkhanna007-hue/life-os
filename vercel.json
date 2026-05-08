@@ -1,0 +1,13 @@
+{
+  "buildCommand": "cd apps/mobile && npm install && npm run build",
+  "outputDirectory": "apps/mobile/dist",
+  "rewrites": [
+    { "source": "/v1/:path*", "destination": "/api/index" },
+    { "source": "/health", "destination": "/api/index" }
+  ],
+  "functions": {
+    "api/index.ts": {
+      "maxDuration": 30
+    }
+  }
+}

@@ -1,0 +1,25 @@
+{
+  "name": "life-os",
+  "private": true,
+  "packageManager": "npm@10.8.2",
+  "scripts": {
+    "dev": "concurrently -n api,app -c green,blue \"npm run dev -w @life-os/api\" \"npm run dev -w @life-os/mobile\"",
+    "typecheck": "tsc --noEmit",
+    "build": "turbo build",
+    "lint": "turbo lint"
+  },
+  "dependencies": {
+    "@supabase/supabase-js": "^2.49.4",
+    "@vercel/node": "^5.0.2"
+  },
+  "devDependencies": {
+    "concurrently": "^9.1.2",
+    "turbo": "^2.5.0",
+    "typescript": "^5.8.3"
+  },
+  "workspaces": [
+    "apps/*",
+    "packages/*",
+    "services/*"
+  ]
+}
