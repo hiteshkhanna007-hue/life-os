@@ -125,87 +125,36 @@ h2 {
 
 .command-card {
   margin-bottom: 18px;
-  border: 1px solid rgba(143, 162, 132, 0.34);
-  border-radius: 24px;
-  background:
-    linear-gradient(145deg, rgba(143, 162, 132, 0.18), rgba(181, 132, 111, 0.08)),
-    var(--surface);
-  padding: 15px;
-}
-
-.command-top {
-  justify-content: space-between;
-  gap: 10px;
-  color: var(--muted);
-  font-size: 12px;
-  margin-bottom: 12px;
-}
-
-.agent-badge {
-  display: inline-flex;
-  align-items: center;
-  gap: 7px;
-  color: var(--ink);
+  border: 1px solid rgba(143, 162, 132, 0.22);
+  border-radius: 20px;
+  background: var(--surface);
+  padding: 14px;
+  display: grid;
+  gap: 11px;
 }
 
 .command-card > p {
-  font-size: 18px;
-  font-weight: 750;
-  line-height: 1.22;
+  font-size: 16px;
+  font-weight: 650;
+  line-height: 1.3;
+  color: var(--ink);
 }
 
 .command-card.compact {
   margin-bottom: 12px;
-  padding: 12px;
+  padding: 11px;
+  gap: 0;
 }
 
 .command-card.compact > p {
   display: -webkit-box;
   overflow: hidden;
-  font-size: 14px;
+  font-size: 13px;
+  font-weight: 500;
   line-height: 1.28;
+  color: var(--muted);
   -webkit-box-orient: vertical;
-  -webkit-line-clamp: 2;
-}
-
-.command-card.compact .command-top {
-  margin-bottom: 8px;
-}
-
-.command-card.compact .ai-chip {
-  margin-top: 9px;
-  padding: 7px 9px;
-}
-
-.agent-feed {
-  display: grid;
-  gap: 6px;
-  margin: 14px 0;
-}
-
-.agent-feed span {
-  color: var(--muted);
-  font-size: 12px;
-  line-height: 1.35;
-}
-
-.ai-chip {
-  display: inline-flex;
-  align-items: center;
-  gap: 7px;
-  width: 100%;
-  margin-top: 13px;
-  border: 1px solid var(--line);
-  border-radius: 14px;
-  background: rgba(246, 241, 232, 0.06);
-  color: var(--muted);
-  padding: 9px 10px;
-  font-size: 12px;
-}
-
-.ai-chip.live {
-  border-color: rgba(143, 162, 132, 0.45);
-  color: var(--ink);
+  -webkit-line-clamp: 1;
 }
 
 .text-button {
@@ -652,6 +601,85 @@ label {
 .bottom-sheet > * + * {
   margin-top: 10px;
 }
+
+/* ── Dictation mic button ─────────────────────────────── */
+
+.capture-wrap {
+  position: relative;
+}
+
+.capture-wrap input,
+.capture-wrap textarea {
+  padding-right: 52px;
+}
+
+.mic-fab {
+  position: absolute;
+  right: 10px;
+  bottom: 10px;
+  display: grid;
+  width: 36px;
+  height: 36px;
+  place-items: center;
+  border: 1px solid var(--line);
+  border-radius: 50%;
+  background: var(--surface-2);
+  color: var(--muted);
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s, border-color 0.15s;
+}
+
+.mic-fab.small {
+  width: 30px;
+  height: 30px;
+  bottom: 8px;
+  right: 8px;
+}
+
+.mic-fab.active {
+  border-color: var(--danger);
+  background: rgba(217, 133, 117, 0.18);
+  color: var(--danger);
+  animation: mic-pulse 1.2s ease-in-out infinite;
+}
+
+@keyframes mic-pulse {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(217, 133, 117, 0.4); }
+  50% { box-shadow: 0 0 0 8px rgba(217, 133, 117, 0); }
+}
+
+/* ── Reminders ────────────────────────────────────────── */
+
+.reminder-list {
+  display: grid;
+  gap: 8px;
+}
+
+.reminder-item {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-height: 58px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--surface);
+  padding: 11px 14px;
+  color: var(--muted);
+}
+
+.reminder-item strong {
+  display: block;
+  font-size: 14px;
+  color: var(--ink);
+}
+
+.reminder-item p {
+  margin-top: 3px;
+  font-size: 12px;
+  color: var(--muted);
+}
+
+/* ── ────────────────────────────────────────────────────── */
 
 .center-screen {
   display: grid;

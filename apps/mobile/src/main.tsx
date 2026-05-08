@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import {
+  Bell,
   BookOpen,
   Check,
   Circle,
@@ -8,17 +9,17 @@ import {
   Layers3,
   ListTodo,
   Mic,
+  MicOff,
   Plus,
   Sparkle,
   SunMedium,
   Timer,
-  Wand2,
   X
 } from "lucide-react";
 import "./styles.css";
 
 type View = "today" | "planner" | "focus" | "journal" | "life";
-type Sheet = "capture" | "task" | "journal" | "project" | null;
+type Sheet = "capture" | "task" | "journal" | "project" | "reminder" | null;
 
 type Task = {
   id: string;
@@ -55,6 +56,13 @@ type Project = {
   };
   aiHealthScore: number;
   riskFlags: string[];
+};
+
+type Reminder = {
+  id: string;
+  title: string;
+  scheduledTime: string | null;
+  status: string;
 };
 
 type AgentEvent = {
@@ -101,6 +109,7 @@ type Snapshot = {
     latestEntry: string;
   };
   projects: Project[];
+  reminders: Reminder[];
   commandCenter: {
     insight: string;
     nextAction: string | null;
@@ -133,7 +142,7 @@ function App() {
     try {
       setError(null);
       const response = await fetch("/v1/today");
-      if (!response.ok) throw new Error("Open the app at http://localhost:5173 so it can reach the API.");
+      if (!response.ok) throw new Error("Could not reach the API.");
       setSnapshot(await response.json());
     } catch (err) {
       setError(err instanceof Error ? err.message : "Life OS could not load.");
@@ -142,9 +151,7 @@ function App() {
     }
   }
 
-  useEffect(() => {
-    void loadSnapshot();
-  }, []);
+  useEffect(() => { void loadSnapshot(); }, []);
 
   async function mutate(path: string, body?: unknown) {
     setBusy(true);
@@ -162,7 +169,7 @@ function App() {
   }
 
   const activeTask = useMemo(
-    () => snapshot?.tasks.upcoming.find((task) => task.id === snapshot.focus.currentSession?.taskId),
+    () => snapshot?.tasks.upcoming.find((t) => t.id === snapshot.focus.currentSession?.taskId),
     [snapshot]
   );
 
@@ -178,15 +185,16 @@ function App() {
         {view === "today" && (
           <TodayView
             snapshot={snapshot}
-            onCompleteTask={(taskId) => mutate(`/v1/tasks/${taskId}/complete`)}
+            onCompleteTask={(id) => mutate(`/v1/tasks/${id}/complete`)}
             onStartFocus={() => mutate("/v1/focus/sessions", { plannedDuration: 25 }).then(() => setView("focus"))}
+            onAddReminder={() => setSheet("reminder")}
           />
         )}
         {view === "planner" && (
           <PlannerView
             snapshot={snapshot}
             onAddTask={() => setSheet("task")}
-            onCompleteTask={(taskId) => mutate(`/v1/tasks/${taskId}/complete`)}
+            onCompleteTask={(id) => mutate(`/v1/tasks/${id}/complete`)}
           />
         )}
         {view === "focus" && (
@@ -207,37 +215,25 @@ function App() {
       <BottomNav view={view} onViewChange={setView} />
 
       {sheet === "capture" && (
-        <CaptureSheet
-          busy={busy}
-          onClose={() => setSheet(null)}
-          onSubmit={(rawInput) => mutate("/v1/capture", { rawInput })}
-        />
+        <CaptureSheet busy={busy} onClose={() => setSheet(null)} onSubmit={(rawInput) => mutate("/v1/capture", { rawInput })} />
       )}
       {sheet === "task" && (
-        <TaskSheet
-          busy={busy}
-          projects={snapshot.projects}
-          onClose={() => setSheet(null)}
-          onSubmit={(task) => mutate("/v1/tasks", task)}
-        />
+        <TaskSheet busy={busy} projects={snapshot.projects} onClose={() => setSheet(null)} onSubmit={(task) => mutate("/v1/tasks", task)} />
       )}
       {sheet === "journal" && (
-        <JournalSheet
-          busy={busy}
-          onClose={() => setSheet(null)}
-          onSubmit={(entry) => mutate("/v1/journal/entries", entry)}
-        />
+        <JournalSheet busy={busy} onClose={() => setSheet(null)} onSubmit={(entry) => mutate("/v1/journal/entries", entry)} />
       )}
       {sheet === "project" && (
-        <ProjectSheet
-          busy={busy}
-          onClose={() => setSheet(null)}
-          onSubmit={(project) => mutate("/v1/projects", project)}
-        />
+        <ProjectSheet busy={busy} onClose={() => setSheet(null)} onSubmit={(project) => mutate("/v1/projects", project)} />
+      )}
+      {sheet === "reminder" && (
+        <ReminderSheet busy={busy} onClose={() => setSheet(null)} onSubmit={(r) => mutate("/v1/reminders", r)} />
       )}
     </div>
   );
 }
+
+// ── Header ────────────────────────────────────────────────────────────────────
 
 function Header({ snapshot, onCapture }: { snapshot: Snapshot; onCapture: () => void }) {
   return (
@@ -246,52 +242,41 @@ function Header({ snapshot, onCapture }: { snapshot: Snapshot; onCapture: () => 
         <p className="kicker">{formatDate(snapshot.date)}</p>
         <h1>Today</h1>
       </div>
-      <button className="round-button" type="button" onClick={onCapture} aria-label="Open capture" title="Open capture">
+      <button className="round-button" type="button" onClick={onCapture} aria-label="Capture" title="Capture">
         <Mic size={20} />
       </button>
     </header>
   );
 }
 
+// ── CommandCenter (cleaned up) ────────────────────────────────────────────────
+
 function CommandCenter({ snapshot, onCapture, compact }: { snapshot: Snapshot; onCapture: () => void; compact?: boolean }) {
   return (
     <section className={compact ? "command-card compact" : "command-card"}>
-      <div className="command-top">
-        <div className="agent-badge">
-          <Wand2 size={15} />
-          <span>Command layer</span>
-        </div>
-        <span>{snapshot.focus.currentSession ? "focus running" : "ready"}</span>
-      </div>
       <p>{snapshot.commandCenter.insight}</p>
-      <div className={snapshot.ai.enabled ? "ai-chip live" : "ai-chip"}>
-        <Sparkle size={14} />
-        <span>{snapshot.ai.enabled ? snapshot.ai.model : "local routing until OpenRouter key is set"}</span>
-      </div>
       {!compact && (
-        <>
-          <div className="agent-feed">
-            {snapshot.commandCenter.agentEvents.slice(0, 3).map((event) => (
-              <span key={event.id}>{event.agent}: {event.text}</span>
-            ))}
-          </div>
-          <button className="text-button" type="button" onClick={onCapture}>
-            Capture something and route it
-          </button>
-        </>
+        <button className="text-button" type="button" onClick={onCapture}>
+          <Sparkle size={15} />
+          Capture &amp; route
+        </button>
       )}
     </section>
   );
 }
 
+// ── Views ─────────────────────────────────────────────────────────────────────
+
 function TodayView({
   snapshot,
   onCompleteTask,
-  onStartFocus
+  onStartFocus,
+  onAddReminder,
 }: {
   snapshot: Snapshot;
-  onCompleteTask: (taskId: string) => void;
+  onCompleteTask: (id: string) => void;
   onStartFocus: () => void;
+  onAddReminder: () => void;
 }) {
   return (
     <section className="view-stack">
@@ -314,6 +299,39 @@ function TodayView({
         ))}
       </div>
 
+      {snapshot.reminders.length > 0 && (
+        <>
+          <div className="section-head">
+            <h2>Reminders</h2>
+            <button className="small-action" type="button" onClick={onAddReminder}>
+              <Plus size={16} />
+              Add
+            </button>
+          </div>
+          <div className="reminder-list">
+            {snapshot.reminders.map((r) => (
+              <article className="reminder-item" key={r.id}>
+                <Bell size={16} />
+                <div>
+                  <strong>{r.title}</strong>
+                  {r.scheduledTime && <p>{formatTime(r.scheduledTime)}</p>}
+                </div>
+              </article>
+            ))}
+          </div>
+        </>
+      )}
+
+      {snapshot.reminders.length === 0 && (
+        <div className="section-head">
+          <h2>Reminders</h2>
+          <button className="small-action" type="button" onClick={onAddReminder}>
+            <Plus size={16} />
+            Add
+          </button>
+        </div>
+      )}
+
       <div className="section-head">
         <h2>Next tasks</h2>
       </div>
@@ -325,11 +343,11 @@ function TodayView({
 function PlannerView({
   snapshot,
   onAddTask,
-  onCompleteTask
+  onCompleteTask,
 }: {
   snapshot: Snapshot;
   onAddTask: () => void;
-  onCompleteTask: (taskId: string) => void;
+  onCompleteTask: (id: string) => void;
 }) {
   return (
     <section className="view-stack">
@@ -349,7 +367,7 @@ function FocusView({
   snapshot,
   task,
   onStart,
-  onComplete
+  onComplete,
 }: {
   snapshot: Snapshot;
   task?: Task;
@@ -367,9 +385,7 @@ function FocusView({
     return () => window.clearInterval(interval);
   }, [active]);
 
-  useEffect(() => {
-    if (active) setSelectedMinutes(activeDuration);
-  }, [active, activeDuration]);
+  useEffect(() => { if (active) setSelectedMinutes(activeDuration); }, [active, activeDuration]);
 
   const elapsedSeconds = snapshot.focus.currentSession
     ? Math.max(0, Math.floor((nowMs - Date.parse(snapshot.focus.currentSession.startedAt)) / 1000))
@@ -407,17 +423,9 @@ function FocusView({
 }
 
 function TimerGauge({
-  active,
-  minutes,
-  progress,
-  remainingSeconds,
-  onMinutesChange
+  active, minutes, progress, remainingSeconds, onMinutesChange,
 }: {
-  active: boolean;
-  minutes: number;
-  progress: number;
-  remainingSeconds: number;
-  onMinutesChange: (minutes: number) => void;
+  active: boolean; minutes: number; progress: number; remainingSeconds: number; onMinutesChange: (m: number) => void;
 }) {
   const [dragging, setDragging] = useState(false);
   const svgRef = useRef<SVGSVGElement | null>(null);
@@ -435,43 +443,23 @@ function TimerGauge({
     const y = event.clientY - rect.top - rect.height / 2;
     const degrees = (Math.atan2(y, x) * 180) / Math.PI + 90;
     const normalized = (degrees + 360) % 360;
-    const next = Math.max(5, Math.min(120, Math.round((normalized / 360) * 120)));
-    onMinutesChange(next);
+    onMinutesChange(Math.max(5, Math.min(120, Math.round((normalized / 360) * 120))));
   }
 
   return (
     <div className={active ? "watch active" : "watch"}>
-      <svg
-        ref={svgRef}
-        viewBox="0 0 280 280"
-        role="slider"
-        aria-label="Focus minutes"
-        aria-valuemin={5}
-        aria-valuemax={120}
-        aria-valuenow={minutes}
-        onPointerDown={(event) => {
-          setDragging(true);
-          updateFromPointer(event);
-        }}
-        onPointerMove={(event) => {
-          if (dragging) updateFromPointer(event);
-        }}
-        onPointerUp={() => setDragging(false)}
-        onPointerLeave={() => setDragging(false)}
-      >
+      <svg ref={svgRef} viewBox="0 0 280 280" role="slider" aria-label="Focus minutes"
+        aria-valuemin={5} aria-valuemax={120} aria-valuenow={minutes}
+        onPointerDown={(e) => { setDragging(true); updateFromPointer(e); }}
+        onPointerMove={(e) => { if (dragging) updateFromPointer(e); }}
+        onPointerUp={() => setDragging(false)} onPointerLeave={() => setDragging(false)}>
         <circle className="watch-track" cx="140" cy="140" r={radius} />
-        <circle
-          className="watch-progress"
-          cx="140"
-          cy="140"
-          r={radius}
-          strokeDasharray={circumference}
-          strokeDashoffset={circumference * (1 - clampedProgress)}
-        />
-        {Array.from({ length: 12 }, (_, index) => {
-          const outer = polarToCartesian(140, 140, 128, index * 30);
-          const inner = polarToCartesian(140, 140, index % 3 === 0 ? 112 : 118, index * 30);
-          return <line className="watch-tick" x1={inner.x} y1={inner.y} x2={outer.x} y2={outer.y} key={index} />;
+        <circle className="watch-progress" cx="140" cy="140" r={radius}
+          strokeDasharray={circumference} strokeDashoffset={circumference * (1 - clampedProgress)} />
+        {Array.from({ length: 12 }, (_, i) => {
+          const outer = polarToCartesian(140, 140, 128, i * 30);
+          const inner = polarToCartesian(140, 140, i % 3 === 0 ? 112 : 118, i * 30);
+          return <line className="watch-tick" x1={inner.x} y1={inner.y} x2={outer.x} y2={outer.y} key={i} />;
         })}
         {!active && <circle className="watch-knob" cx={marker.x} cy={marker.y} r="10" />}
       </svg>
@@ -495,8 +483,8 @@ function JournalView({ snapshot, onAddJournal }: { snapshot: Snapshot; onAddJour
       </div>
       <div className="mood-card">
         <div className="mood-bars">
-          {snapshot.journal.moodTrend.map((mood, index) => (
-            <span key={`${mood}-${index}`} style={{ height: `${Math.max(18, (mood + 5) * 9)}%` }} />
+          {snapshot.journal.moodTrend.map((mood, i) => (
+            <span key={`${mood}-${i}`} style={{ height: `${Math.max(18, (mood + 5) * 9)}%` }} />
           ))}
         </div>
         <p>{snapshot.journal.latestEntry}</p>
@@ -505,15 +493,7 @@ function JournalView({ snapshot, onAddJournal }: { snapshot: Snapshot; onAddJour
   );
 }
 
-function LifeView({
-  snapshot,
-  onAddProject,
-  onAddTask
-}: {
-  snapshot: Snapshot;
-  onAddProject: () => void;
-  onAddTask: () => void;
-}) {
+function LifeView({ snapshot, onAddProject, onAddTask }: { snapshot: Snapshot; onAddProject: () => void; onAddTask: () => void }) {
   return (
     <section className="view-stack">
       <div className="section-head">
@@ -547,19 +527,13 @@ function LifeView({
   );
 }
 
-function TaskList({
-  tasks,
-  projects,
-  onCompleteTask
-}: {
-  tasks: Task[];
-  projects: Project[];
-  onCompleteTask: (taskId: string) => void;
-}) {
+// ── Shared components ─────────────────────────────────────────────────────────
+
+function TaskList({ tasks, projects, onCompleteTask }: { tasks: Task[]; projects: Project[]; onCompleteTask: (id: string) => void }) {
   return (
     <div className="task-list">
       {tasks.map((task) => {
-        const project = projects.find((item) => item.id === task.projectId);
+        const project = projects.find((p) => p.id === task.projectId);
         return (
           <article className={task.status === "done" ? "task done" : "task"} key={task.id}>
             <button type="button" className="check-button" onClick={() => onCompleteTask(task.id)} aria-label={`Complete ${task.title}`}>
@@ -598,19 +572,13 @@ function Stat({ label, value }: { label: string; value: string }) {
   );
 }
 
-function BottomNav({ view, onViewChange }: { view: View; onViewChange: (view: View) => void }) {
+function BottomNav({ view, onViewChange }: { view: View; onViewChange: (v: View) => void }) {
   return (
     <nav className="liquid-nav" aria-label="Primary">
       {navItems.map((item) => (
-        <button
-          type="button"
-          className={view === item.view ? "glass-tab selected" : "glass-tab"}
-          data-testid={`bottom-nav-${item.view}`}
-          key={item.view}
-          onClick={() => onViewChange(item.view)}
-          aria-label={item.label}
-          title={item.label}
-        >
+        <button type="button" className={view === item.view ? "glass-tab selected" : "glass-tab"}
+          data-testid={`bottom-nav-${item.view}`} key={item.view}
+          onClick={() => onViewChange(item.view)} aria-label={item.label} title={item.label}>
           <item.icon size={19} />
           <span>{item.label}</span>
         </button>
@@ -619,42 +587,68 @@ function BottomNav({ view, onViewChange }: { view: View; onViewChange: (view: Vi
   );
 }
 
-function CaptureSheet({
-  busy,
-  onClose,
-  onSubmit
-}: {
-  busy: boolean;
-  onClose: () => void;
-  onSubmit: (rawInput: string) => void;
-}) {
+// ── Sheets ────────────────────────────────────────────────────────────────────
+
+function CaptureSheet({ busy, onClose, onSubmit }: { busy: boolean; onClose: () => void; onSubmit: (input: string) => void }) {
   const [rawInput, setRawInput] = useState("");
+  const [listening, setListening] = useState(false);
+  const recRef = useRef<SpeechRecognition | null>(null);
+
+  function toggleDictation() {
+    if (listening) {
+      recRef.current?.stop();
+      setListening(false);
+      return;
+    }
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const SR: typeof SpeechRecognition = (window as any).SpeechRecognition ?? (window as any).webkitSpeechRecognition;
+    if (!SR) { alert("Dictation not supported in this browser. Try Chrome or Safari."); return; }
+    const rec = new SR();
+    rec.continuous = true;
+    rec.interimResults = true;
+    rec.lang = "en-AU";
+    rec.onresult = (e: SpeechRecognitionEvent) => {
+      const transcript = Array.from(e.results).map((r) => r[0].transcript).join("");
+      setRawInput(transcript);
+    };
+    rec.onend = () => setListening(false);
+    rec.onerror = () => setListening(false);
+    rec.start();
+    recRef.current = rec;
+    setListening(true);
+  }
+
+  function handleClose() {
+    recRef.current?.stop();
+    onClose();
+  }
+
   return (
-    <SheetFrame title="Quick capture" onClose={onClose}>
-      <p className="sheet-note">Type what you would say. The command layer routes it to task, journal, or project.</p>
-      <textarea
-        autoFocus
-        value={rawInput}
-        onChange={(event) => setRawInput(event.target.value)}
-        placeholder="I feel tired but need to finish the launch note tonight"
-      />
+    <SheetFrame title="Capture" onClose={handleClose}>
+      <p className="sheet-note">
+        {listening ? "Listening — speak freely, tap mic to stop." : "Type or tap the mic to dictate. AI routes it to the right place."}
+      </p>
+      <div className="capture-wrap">
+        <textarea
+          autoFocus={!listening}
+          value={rawInput}
+          onChange={(e) => setRawInput(e.target.value)}
+          placeholder="Call Dr Patel at 3pm · I feel overwhelmed · Start a fitness project"
+        />
+        <button type="button" className={listening ? "mic-fab active" : "mic-fab"} onClick={toggleDictation} aria-label="Toggle dictation">
+          {listening ? <MicOff size={20} /> : <Mic size={20} />}
+        </button>
+      </div>
       <button className="main-button" type="button" disabled={busy || !rawInput.trim()} onClick={() => onSubmit(rawInput)}>
         <Sparkle size={18} />
-        Route capture
+        Route
       </button>
     </SheetFrame>
   );
 }
 
-function TaskSheet({
-  busy,
-  projects,
-  onClose,
-  onSubmit
-}: {
-  busy: boolean;
-  projects: Project[];
-  onClose: () => void;
+function TaskSheet({ busy, projects, onClose, onSubmit }: {
+  busy: boolean; projects: Project[]; onClose: () => void;
   onSubmit: (task: { title: string; projectId: string | null; dueTime: string | null }) => void;
 }) {
   const [title, setTitle] = useState("");
@@ -662,14 +656,12 @@ function TaskSheet({
   const [dueTime, setDueTime] = useState("");
   return (
     <SheetFrame title="Add task" onClose={onClose}>
-      <input autoFocus value={title} onChange={(event) => setTitle(event.target.value)} placeholder="Task name" />
-      <select value={projectId ?? ""} onChange={(event) => setProjectId(event.target.value || null)}>
+      <input autoFocus value={title} onChange={(e) => setTitle(e.target.value)} placeholder="Task name" />
+      <select value={projectId ?? ""} onChange={(e) => setProjectId(e.target.value || null)}>
         <option value="">Inbox</option>
-        {projects.map((project) => (
-          <option value={project.id} key={project.id}>{project.name}</option>
-        ))}
+        {projects.map((p) => <option value={p.id} key={p.id}>{p.name}</option>)}
       </select>
-      <input value={dueTime} onChange={(event) => setDueTime(event.target.value)} placeholder="Time, e.g. 15:30" />
+      <input value={dueTime} onChange={(e) => setDueTime(e.target.value)} placeholder="Time, e.g. 15:30" />
       <button className="main-button" type="button" disabled={busy || !title.trim()} onClick={() => onSubmit({ title, projectId, dueTime: dueTime || null })}>
         Add task
       </button>
@@ -677,13 +669,8 @@ function TaskSheet({
   );
 }
 
-function JournalSheet({
-  busy,
-  onClose,
-  onSubmit
-}: {
-  busy: boolean;
-  onClose: () => void;
+function JournalSheet({ busy, onClose, onSubmit }: {
+  busy: boolean; onClose: () => void;
   onSubmit: (entry: { content: string; moodScore: number; energyLevel: number }) => void;
 }) {
   const [content, setContent] = useState("");
@@ -691,9 +678,9 @@ function JournalSheet({
   const [energyLevel, setEnergyLevel] = useState(5);
   return (
     <SheetFrame title="Journal entry" onClose={onClose}>
-      <textarea autoFocus value={content} onChange={(event) => setContent(event.target.value)} placeholder="What changed today?" />
-      <label>Mood <input type="range" min="-5" max="5" value={moodScore} onChange={(event) => setMoodScore(Number(event.target.value))} /></label>
-      <label>Energy <input type="range" min="1" max="10" value={energyLevel} onChange={(event) => setEnergyLevel(Number(event.target.value))} /></label>
+      <textarea autoFocus value={content} onChange={(e) => setContent(e.target.value)} placeholder="What changed today?" />
+      <label>Mood <input type="range" min="-5" max="5" value={moodScore} onChange={(e) => setMoodScore(Number(e.target.value))} /></label>
+      <label>Energy <input type="range" min="1" max="10" value={energyLevel} onChange={(e) => setEnergyLevel(Number(e.target.value))} /></label>
       <button className="main-button" type="button" disabled={busy || !content.trim()} onClick={() => onSubmit({ content, moodScore, energyLevel })}>
         Save entry
       </button>
@@ -701,33 +688,75 @@ function JournalSheet({
   );
 }
 
-function ProjectSheet({
-  busy,
-  onClose,
-  onSubmit
-}: {
-  busy: boolean;
-  onClose: () => void;
-  onSubmit: (project: { name: string; lifeArea: string; intention: string }) => void;
+function ProjectSheet({ busy, onClose, onSubmit }: {
+  busy: boolean; onClose: () => void;
+  onSubmit: (p: { name: string; lifeArea: string; intention: string }) => void;
 }) {
   const [name, setName] = useState("");
   const [lifeArea, setLifeArea] = useState("career");
   const [intention, setIntention] = useState("");
   return (
     <SheetFrame title="Add project" onClose={onClose}>
-      <input autoFocus value={name} onChange={(event) => setName(event.target.value)} placeholder="Project name" />
-      <select value={lifeArea} onChange={(event) => setLifeArea(event.target.value)}>
-        <option value="career">Career</option>
-        <option value="health">Health</option>
-        <option value="relationships">Relationships</option>
-        <option value="creativity">Creativity</option>
-        <option value="finances">Finances</option>
-        <option value="learning">Learning</option>
-        <option value="other">Other</option>
+      <input autoFocus value={name} onChange={(e) => setName(e.target.value)} placeholder="Project name" />
+      <select value={lifeArea} onChange={(e) => setLifeArea(e.target.value)}>
+        {["career", "health", "relationships", "creativity", "finances", "learning", "other"].map((a) => (
+          <option value={a} key={a}>{a.charAt(0).toUpperCase() + a.slice(1)}</option>
+        ))}
       </select>
-      <textarea value={intention} onChange={(event) => setIntention(event.target.value)} placeholder="What should this protect or move forward?" />
+      <textarea value={intention} onChange={(e) => setIntention(e.target.value)} placeholder="What should this protect or move forward?" />
       <button className="main-button" type="button" disabled={busy || !name.trim()} onClick={() => onSubmit({ name, lifeArea, intention })}>
         Add project
+      </button>
+    </SheetFrame>
+  );
+}
+
+function ReminderSheet({ busy, onClose, onSubmit }: {
+  busy: boolean; onClose: () => void;
+  onSubmit: (r: { title: string; scheduledTime: string }) => void;
+}) {
+  const [title, setTitle] = useState("");
+  const [time, setTime] = useState("");
+  const [listening, setListening] = useState(false);
+  const recRef = useRef<SpeechRecognition | null>(null);
+
+  function toggleDictation() {
+    if (listening) { recRef.current?.stop(); setListening(false); return; }
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const SR: typeof SpeechRecognition = (window as any).SpeechRecognition ?? (window as any).webkitSpeechRecognition;
+    if (!SR) return;
+    const rec = new SR();
+    rec.lang = "en-AU";
+    rec.onresult = (e: SpeechRecognitionEvent) => setTitle(e.results[0]?.[0]?.transcript ?? "");
+    rec.onend = () => setListening(false);
+    rec.start();
+    recRef.current = rec;
+    setListening(true);
+  }
+
+  function handleSubmit() {
+    if (!title.trim() || !time) return;
+    const today = new Date().toISOString().slice(0, 10);
+    onSubmit({ title: title.trim(), scheduledTime: `${today}T${time}:00` });
+  }
+
+  return (
+    <SheetFrame title="Set reminder" onClose={onClose}>
+      <div className="capture-wrap">
+        <input
+          autoFocus={!listening}
+          value={title}
+          onChange={(e) => setTitle(e.target.value)}
+          placeholder="Reminder title"
+        />
+        <button type="button" className={listening ? "mic-fab small active" : "mic-fab small"} onClick={toggleDictation} aria-label="Dictate">
+          {listening ? <MicOff size={16} /> : <Mic size={16} />}
+        </button>
+      </div>
+      <input type="time" value={time} onChange={(e) => setTime(e.target.value)} />
+      <button className="main-button" type="button" disabled={busy || !title.trim() || !time} onClick={handleSubmit}>
+        <Bell size={18} />
+        Set reminder
       </button>
     </SheetFrame>
   );
@@ -758,30 +787,27 @@ function CenterScreen({ text, actionLabel, onAction }: { text: string; actionLab
   );
 }
 
+// ── Utils ─────────────────────────────────────────────────────────────────────
+
 function formatDate(date: string) {
-  return new Intl.DateTimeFormat("en-US", { weekday: "long", month: "long", day: "numeric" }).format(new Date(`${date}T12:00:00`));
+  return new Intl.DateTimeFormat("en-AU", { weekday: "long", month: "long", day: "numeric" }).format(new Date(`${date}T12:00:00`));
 }
 
 function formatTime(date: string) {
-  return new Intl.DateTimeFormat("en-US", { hour: "2-digit", minute: "2-digit", hour12: false }).format(new Date(date));
+  return new Intl.DateTimeFormat("en-AU", { hour: "2-digit", minute: "2-digit", hour12: true }).format(new Date(date));
 }
 
-function signed(value: number) {
-  return value > 0 ? `+${value}` : String(value);
-}
+function signed(value: number) { return value > 0 ? `+${value}` : String(value); }
 
 function formatDuration(seconds: number) {
-  const minutes = Math.floor(seconds / 60);
-  const rest = seconds % 60;
-  return `${minutes}:${String(rest).padStart(2, "0")}`;
+  const m = Math.floor(seconds / 60);
+  const s = seconds % 60;
+  return `${m}:${String(s).padStart(2, "0")}`;
 }
 
-function polarToCartesian(centerX: number, centerY: number, radius: number, angleInDegrees: number) {
-  const angleInRadians = ((angleInDegrees - 90) * Math.PI) / 180;
-  return {
-    x: centerX + radius * Math.cos(angleInRadians),
-    y: centerY + radius * Math.sin(angleInRadians)
-  };
+function polarToCartesian(cx: number, cy: number, r: number, deg: number) {
+  const rad = ((deg - 90) * Math.PI) / 180;
+  return { x: cx + r * Math.cos(rad), y: cy + r * Math.sin(rad) };
 }
 
 createRoot(document.getElementById("root")!).render(

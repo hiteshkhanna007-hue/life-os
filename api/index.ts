@@ -131,14 +131,25 @@ async function pushEvent(agent: string, text: string) {
   }
 }
 
+function rowToReminder(r: Record<string, unknown>) {
+  return {
+    id: r.id as string,
+    title: r.title as string,
+    scheduledTime: (r.scheduled_time as string) ?? null,
+    status: r.status as string,
+  };
+}
+
 async function buildSnapshot() {
-  const [tasksRes, projectsRes, journalRes, calRes, focusRes, eventsRes] = await Promise.all([
+  const today = new Date().toISOString().slice(0, 10);
+  const [tasksRes, projectsRes, journalRes, calRes, focusRes, eventsRes, remindersRes] = await Promise.all([
     supabase.from("tasks").select("*").eq("user_id", USER_ID).is("deleted_at", null).neq("status", "archived").order("created_at"),
     supabase.from("projects").select("*").eq("user_id", USER_ID).eq("status", "active"),
     supabase.from("journal_entries").select("*").eq("user_id", USER_ID).order("created_at", { ascending: false }).limit(7),
     supabase.from("calendar_blocks").select("*").eq("user_id", USER_ID).order("start_time"),
     supabase.from("focus_sessions").select("*").eq("user_id", USER_ID).eq("status", "active").order("started_at", { ascending: false }).limit(1),
     supabase.from("agent_messages").select("*").order("timestamp", { ascending: false }).limit(8),
+    supabase.from("reminders").select("*").eq("user_id", USER_ID).eq("status", "pending").gte("scheduled_time", today).order("scheduled_time").limit(10),
   ]);
 
   const taskRows = (tasksRes.data ?? []) as Record<string, unknown>[];
@@ -147,6 +158,7 @@ async function buildSnapshot() {
   const calRows = (calRes.data ?? []) as Record<string, unknown>[];
   const focusRows = (focusRes.data ?? []) as Record<string, unknown>[];
   const eventRows = (eventsRes.data ?? []) as Record<string, unknown>[];
+  const reminderRows = (remindersRes.data ?? []) as Record<string, unknown>[];
 
   const tasks = taskRows.map(rowToTask);
   const projects = projectRows.map((p) => rowToProject(p, taskRows));
@@ -154,6 +166,7 @@ async function buildSnapshot() {
   const calBlocks = calRows.map(rowToCalendarBlock);
   const activeFocus = focusRows.length > 0 ? rowToFocusSession(focusRows[0]) : null;
   const agentEvents = eventRows.map(rowToAgentEvent);
+  const reminders = reminderRows.map(rowToReminder);
 
   const completed = tasks.filter((t) => t.status === "done").length;
   const pomosCompleted = tasks.reduce((s, t) => s + t.actualPomodoros, 0);
@@ -190,6 +203,7 @@ async function buildSnapshot() {
       latestEntry: journals[0]?.content ?? "",
     },
     projects,
+    reminders,
     commandCenter: {
       insight: commandInsight(tasks, journals),
       nextAction: (tasks.find((t) => t.status === "in_progress") ?? tasks.find((t) => t.status === "todo"))?.id ?? null,
@@ -444,6 +458,24 @@ async function handleCapture(req: VercelRequest, res: VercelResponse) {
   res.json({ routedTo: "task", created: rowToTask(data as Record<string, unknown>), snapshot: await buildSnapshot() });
 }
 
+async function handlePostReminder(req: VercelRequest, res: VercelResponse) {
+  const body = req.body as { title: string; scheduledTime: string };
+  const title = body.title?.trim();
+  if (!title) { res.status(400).json({ error: "title required" }); return; }
+  const { data, error } = await supabase.from("reminders").insert({
+    user_id: USER_ID,
+    title,
+    trigger_type: "time",
+    scheduled_time: body.scheduledTime,
+    action_type: "notification",
+    action_payload: {},
+    status: "pending",
+  }).select().single();
+  if (error) { res.status(500).json({ error: error.message }); return; }
+  await pushEvent("command", `Reminder set: ${title}`);
+  res.json(rowToReminder(data as Record<string, unknown>));
+}
+
 // ── main handler ──────────────────────────────────────────────────────────────
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
@@ -464,6 +496,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     if (method === "POST" && path === "/v1/tasks") return handlePostTask(req, res);
     if (method === "POST" && path === "/v1/journal/entries") return handlePostJournal(req, res);
     if (method === "POST" && path === "/v1/projects") return handlePostProject(req, res);
+    if (method === "POST" && path === "/v1/reminders") return handlePostReminder(req, res);
     if (method === "POST" && path === "/v1/focus/sessions") return handleStartFocus(req, res);
     if (method === "POST" && path === "/v1/capture") return handleCapture(req, res);
 
