@@ -22,17 +22,17 @@ type Energy = "low" | "medium" | "high";
 
 function rowToTask(r: Record<string, unknown>) {
   return {
-    id: r.id,
-    title: r.title,
-    description: r.description ?? "",
-    status: r.status,
-    priority: r.priority,
-    dueTime: r.due_time ?? null,
-    estimatedPomodoros: r.estimated_pomodoros ?? 1,
-    actualPomodoros: r.actual_pomodoros ?? 0,
-    projectId: r.project_id ?? null,
-    tags: r.tags ?? [],
-    energyRequired: r.energy_required ?? "medium",
+    id: r.id as string,
+    title: r.title as string,
+    description: (r.description as string) ?? "",
+    status: r.status as string,
+    priority: r.priority as Priority,
+    dueTime: (r.due_time as string) ?? null,
+    estimatedPomodoros: (r.estimated_pomodoros as number) ?? 1,
+    actualPomodoros: (r.actual_pomodoros as number) ?? 0,
+    projectId: (r.project_id as string) ?? null,
+    tags: (r.tags as string[]) ?? [],
+    energyRequired: (r.energy_required as Energy) ?? "medium",
   };
 }
 
@@ -63,11 +63,11 @@ function rowToProject(r: Record<string, unknown>, taskRows: Record<string, unkno
 
 function rowToJournal(r: Record<string, unknown>) {
   return {
-    id: r.id,
-    content: r.content,
-    moodScore: r.mood_score ?? 0,
-    energyLevel: r.energy_level ?? 5,
-    createdAt: r.created_at,
+    id: r.id as string,
+    content: r.content as string,
+    moodScore: (r.mood_score as number) ?? 0,
+    energyLevel: (r.energy_level as number) ?? 5,
+    createdAt: r.created_at as string,
   };
 }
 
