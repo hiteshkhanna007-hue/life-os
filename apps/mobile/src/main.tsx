@@ -592,17 +592,15 @@ function BottomNav({ view, onViewChange }: { view: View; onViewChange: (v: View)
 function CaptureSheet({ busy, onClose, onSubmit }: { busy: boolean; onClose: () => void; onSubmit: (input: string) => void }) {
   const [rawInput, setRawInput] = useState("");
   const [listening, setListening] = useState(false);
+  const [micError, setMicError] = useState<string | null>(null);
   const recRef = useRef<SpeechRecognition | null>(null);
+  const shouldListenRef = useRef(false);
 
-  function toggleDictation() {
-    if (listening) {
-      recRef.current?.stop();
-      setListening(false);
-      return;
-    }
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const SR: typeof SpeechRecognition = (window as any).SpeechRecognition ?? (window as any).webkitSpeechRecognition;
-    if (!SR) { alert("Dictation not supported in this browser. Try Chrome or Safari."); return; }
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const SR: typeof SpeechRecognition | null = (window as any).SpeechRecognition ?? (window as any).webkitSpeechRecognition ?? null;
+
+  function startRec() {
+    if (!SR) return;
     const rec = new SR();
     rec.continuous = true;
     rec.interimResults = true;
@@ -611,14 +609,42 @@ function CaptureSheet({ busy, onClose, onSubmit }: { busy: boolean; onClose: () 
       const transcript = Array.from(e.results).map((r) => r[0].transcript).join("");
       setRawInput(transcript);
     };
-    rec.onend = () => setListening(false);
-    rec.onerror = () => setListening(false);
+    rec.onend = () => {
+      // Auto-restart if the user hasn't tapped stop — browser cuts off after silence
+      if (shouldListenRef.current) startRec();
+      else setListening(false);
+    };
+    rec.onerror = (e: SpeechRecognitionErrorEvent) => {
+      if (e.error === "not-allowed" || e.error === "service-not-allowed") {
+        setMicError("Mic permission denied — allow microphone access in your browser settings.");
+      } else if (e.error === "no-speech") {
+        // not-speech is benign; onend will restart
+      } else {
+        setMicError(`Mic error: ${e.error}`);
+      }
+      shouldListenRef.current = false;
+      setListening(false);
+    };
     rec.start();
     recRef.current = rec;
+  }
+
+  function toggleDictation() {
+    if (listening) {
+      shouldListenRef.current = false;
+      recRef.current?.stop();
+      setListening(false);
+      return;
+    }
+    if (!SR) { alert("Dictation not supported in this browser. Try Chrome or Safari."); return; }
+    setMicError(null);
+    shouldListenRef.current = true;
+    startRec();
     setListening(true);
   }
 
   function handleClose() {
+    shouldListenRef.current = false;
     recRef.current?.stop();
     onClose();
   }
@@ -626,7 +652,7 @@ function CaptureSheet({ busy, onClose, onSubmit }: { busy: boolean; onClose: () 
   return (
     <SheetFrame title="Capture" onClose={handleClose}>
       <p className="sheet-note">
-        {listening ? "Listening — speak freely, tap mic to stop." : "Type or tap the mic to dictate. AI routes it to the right place."}
+        {micError ? micError : listening ? "Listening — speak freely, tap mic to stop." : "Type or tap the mic to dictate. AI routes it to the right place."}
       </p>
       <div className="capture-wrap">
         <textarea
@@ -718,19 +744,46 @@ function ReminderSheet({ busy, onClose, onSubmit }: {
   const [title, setTitle] = useState("");
   const [time, setTime] = useState("");
   const [listening, setListening] = useState(false);
+  const [micError, setMicError] = useState<string | null>(null);
   const recRef = useRef<SpeechRecognition | null>(null);
+  const shouldListenRef = useRef(false);
 
-  function toggleDictation() {
-    if (listening) { recRef.current?.stop(); setListening(false); return; }
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const SR: typeof SpeechRecognition = (window as any).SpeechRecognition ?? (window as any).webkitSpeechRecognition;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const SR: typeof SpeechRecognition | null = (window as any).SpeechRecognition ?? (window as any).webkitSpeechRecognition ?? null;
+
+  function startRec() {
     if (!SR) return;
     const rec = new SR();
     rec.lang = "en-AU";
-    rec.onresult = (e: SpeechRecognitionEvent) => setTitle(e.results[0]?.[0]?.transcript ?? "");
-    rec.onend = () => setListening(false);
+    rec.onresult = (e: SpeechRecognitionEvent) => {
+      setTitle(e.results[0]?.[0]?.transcript ?? "");
+      // Stop after first result for single-shot title dictation
+      shouldListenRef.current = false;
+      setListening(false);
+    };
+    rec.onend = () => {
+      if (shouldListenRef.current) startRec();
+      else setListening(false);
+    };
+    rec.onerror = (e: SpeechRecognitionErrorEvent) => {
+      if (e.error === "not-allowed" || e.error === "service-not-allowed") {
+        setMicError("Mic permission denied.");
+      } else if (e.error !== "no-speech") {
+        setMicError(`Mic error: ${e.error}`);
+      }
+      shouldListenRef.current = false;
+      setListening(false);
+    };
     rec.start();
     recRef.current = rec;
+  }
+
+  function toggleDictation() {
+    if (listening) { shouldListenRef.current = false; recRef.current?.stop(); setListening(false); return; }
+    if (!SR) return;
+    setMicError(null);
+    shouldListenRef.current = true;
+    startRec();
     setListening(true);
   }
 
@@ -742,6 +795,7 @@ function ReminderSheet({ busy, onClose, onSubmit }: {
 
   return (
     <SheetFrame title="Set reminder" onClose={onClose}>
+      {micError && <p className="sheet-note" style={{ color: "var(--error, #f87171)" }}>{micError}</p>}
       <div className="capture-wrap">
         <input
           autoFocus={!listening}
