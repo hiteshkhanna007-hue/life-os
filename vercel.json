@@ -1,6 +1,8 @@
 {
+  "framework": null,
   "buildCommand": "cd apps/mobile && npm install && npm run build",
   "outputDirectory": "apps/mobile/dist",
+  "installCommand": "npm install",
   "rewrites": [
     { "source": "/v1/:path*", "destination": "/api/index" },
     { "source": "/health", "destination": "/api/index" }
