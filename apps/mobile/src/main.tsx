@@ -98,18 +98,20 @@ function formatTime(date: string) {
     .format(new Date(date));
 }
 
-// Handle both "HH:MM" short times and full ISO strings
+// Handle "HH:MM", "HH:MM:SS" (Postgres time columns), and full ISO strings
 function parseTime(t: string): Date {
-  if (/^\d{1,2}:\d{2}$/.test(t)) {
+  if (/^\d{1,2}:\d{2}(:\d{2})?$/.test(t)) {
     const today = new Date().toISOString().slice(0, 10);
-    return new Date(`${today}T${t}:00`);
+    const padded = t.length <= 5 ? `${t}:00` : t;
+    return new Date(`${today}T${padded}`);
   }
   return new Date(t);
 }
 
 function formatShortTime(t: string): string {
-  return new Intl.DateTimeFormat("en-AU", { hour: "2-digit", minute: "2-digit", hour12: true })
-    .format(parseTime(t));
+  const d = parseTime(t);
+  if (isNaN(d.getTime())) return t;
+  return new Intl.DateTimeFormat("en-AU", { hour: "2-digit", minute: "2-digit", hour12: true }).format(d);
 }
 
 function formatHour(h: number) {
@@ -221,15 +223,19 @@ function App() {
     }
   }
 
-  async function capture(rawInput: string) {
+  async function capture(rawInput: string): Promise<{ routedTo: string } | null> {
     setBusy(true);
     try {
-      await fetch("/v1/capture", {
+      const res = await fetch("/v1/capture", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ rawInput }),
       });
+      const data = res.ok ? (await res.json() as { routedTo: string }) : null;
       await loadSnapshot();
+      return data;
+    } catch {
+      return null;
     } finally {
       setBusy(false);
     }
@@ -266,7 +272,7 @@ function App() {
         <CaptureOverlay
           busy={busy}
           onClose={() => setCaptureOpen(false)}
-          onSubmit={capture}
+          onSubmit={(input) => capture(input)}
         />
       )}
 
@@ -651,19 +657,16 @@ function ReflectScreen({ snapshot, onAddJournal }: { snapshot: Snapshot; onAddJo
 
 // ── Capture overlay ───────────────────────────────────────────────────────────
 
-function guessRoutes(input: string) {
-  const routes: Array<{ dest: string; icon: string; label: string }> = [];
-  if (/remind|at \d|pm|am/i.test(input))     routes.push({ dest: "Reminder", icon: "⏰", label: input.slice(0, 60) });
-  if (/feel|mood|tired|today|journal/i.test(input)) routes.push({ dest: "Reflect", icon: "◑", label: input.slice(0, 60) });
-  if (/project|start|launch|build/i.test(input))    routes.push({ dest: "Thread", icon: "✦", label: input.slice(0, 60) });
-  if (routes.length === 0) routes.push({ dest: "Tides", icon: "⤴", label: input.slice(0, 60) });
-  return routes;
-}
+const ROUTE_MAP: Record<string, { icon: string; dest: string }> = {
+  task:    { icon: "⤴", dest: "Tides" },
+  journal: { icon: "◑", dest: "Reflect" },
+  project: { icon: "✦", dest: "Threads" },
+};
 
 function CaptureOverlay({ busy, onClose, onSubmit }: {
   busy: boolean;
   onClose: () => void;
-  onSubmit: (input: string) => Promise<void>;
+  onSubmit: (input: string) => Promise<{ routedTo: string } | null>;
 }) {
   const [phase, setPhase] = useState<CapturePhase>("idle");
   const [transcript, setTranscript] = useState("");
@@ -728,9 +731,11 @@ function CaptureOverlay({ busy, onClose, onSubmit }: {
     shouldListenRef.current = false;
     recRef.current?.stop();
     setListening(false);
-    setRoutes(guessRoutes(transcript));
     setPhase("routed");
-    await onSubmit(transcript);
+    setRoutes([]); // show loading state while AI processes
+    const result = await onSubmit(transcript);
+    const r = result?.routedTo ? (ROUTE_MAP[result.routedTo] ?? ROUTE_MAP.task) : ROUTE_MAP.task;
+    setRoutes([{ dest: r.dest, icon: r.icon, label: transcript.slice(0, 60) }]);
   }
 
   function startListening() {
@@ -775,7 +780,9 @@ function CaptureOverlay({ busy, onClose, onSubmit }: {
 
       {phase === "routed" && (
         <div className="capture-routed">
-          {routes.map((r, i) => (
+          {routes.length === 0 ? (
+            <div className="route-thinking">Routing…</div>
+          ) : routes.map((r, i) => (
             <div key={i} className="route-card" style={{ animationDelay: `${i * 90}ms` }}>
               <div className="route-card-icon">{r.icon}</div>
               <div className="route-card-body">
@@ -803,8 +810,8 @@ function CaptureOverlay({ busy, onClose, onSubmit }: {
           </div>
         )}
         {phase === "routed" && (
-          <button className="capture-done-btn" disabled={busy} onClick={handleClose}>
-            {busy ? "Saving…" : "Looks right · save"}
+          <button className="capture-done-btn" disabled={routes.length === 0} onClick={handleClose}>
+            {routes.length === 0 ? "Routing…" : "Done ✓"}
           </button>
         )}
       </div>
@@ -1001,7 +1008,12 @@ function ReminderDrawer({ busy, onClose, onSubmit }: {
 
 // ── Mount ─────────────────────────────────────────────────────────────────────
 
-createRoot(document.getElementById("root")!).render(
+const container = document.getElementById("root")!;
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+const root = (window as any).__lifeOsRoot ?? createRoot(container);
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+(window as any).__lifeOsRoot = root;
+root.render(
   <React.StrictMode>
     <App />
   </React.StrictMode>
