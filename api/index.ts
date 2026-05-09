@@ -249,45 +249,54 @@ type CaptureItem = {
   energyLevel?: number | null;
 };
 
-const CLASSIFY_SYSTEM = `You are Life OS's capture classifier. Your ONLY job: parse a brain dump into a JSON array of individual action items.
+const CLASSIFY_SYSTEM = `You are Life OS's voice capture processor. The input is raw speech-to-text dictation — messy, run-on, with filler words. Do two things in order:
 
-RETURN ONLY a raw JSON array — no markdown fences, no explanation text, nothing else.
+STEP 1 — TRANSCRIBE: Clean the raw speech into clear, natural language. Remove filler words ("I should", "about now", "you know", "so"), fix run-on words (e.g. "goodSo" → separate thoughts), correct obvious speech-to-text errors. Identify each distinct intent.
+
+STEP 2 — CLASSIFY: For each distinct intent, produce one JSON object.
+
+RETURN ONLY a raw JSON array — no markdown, no explanation, nothing else.
 
 Each object must have exactly these fields:
   itemType: "task" | "journal" | "project" | "reminder"
-  title: string  (short imperative for tasks/reminders; descriptive for journal/project)
-  description: string | null
+  title: string  (clean, concise imperative — 2-6 words — NO raw dictation verbatim)
+  description: string | null  (optional extra detail, also cleaned up)
   priority: "critical" | "high" | "medium" | "low" | null  (tasks only; null for all others)
-  dueTime: "HH:MM" | null  (24h format; extract from natural language; null if no time mentioned)
+  dueTime: "HH:MM" | null  (24h format; extract from speech; null if no time mentioned)
   moodScore: number | null  (-5 to +5; journal only; null for all others)
   energyLevel: number | null  (1 to 10; journal only; null for all others)
 
-SPLITTING — apply before classifying:
-• Split on commas, semicolons, "and", "also", "plus", "I need to", "I should", "I want to"
-• Each distinct thought = one separate item
-• NEVER merge two different actions into a single item
+SPLITTING:
+• Each distinct action, feeling, or intention = one separate item
+• Split on: topic changes, "and", "also", "I should", "I need to", "I want to", time shifts
+• NEVER merge two different actions into one item
 
 CLASSIFYING:
-• Emotional / reflective / how-I-feel statement → journal
-• "start a ...", "I want to build/launch/create ..." → project
-• "remind me" + specific time → reminder
-• Everything else → task
+• Action / to-do → task
+• Feeling / reflection / mood / stress / how I feel → journal
+• "start a ...", "build/launch/create ..." → project
+• "remind me at [time]" → reminder
 
 TIME EXTRACTION:
-• "at 3pm" → "15:00"    "at 10am" → "10:00"    "at 10:30" → "10:30"
-• "tonight" → "20:00"   "this morning" → "09:00"  "noon" / "lunch" → "12:30"
-• "afternoon" → "14:00"  "evening" → "18:30"
-• No time mentioned → null
+• "at 8pm" → "20:00"   "at 3pm" → "15:00"   "at 10am" → "10:00"
+• "tonight" → "20:00"  "this morning" → "09:00"  "noon/lunch" → "12:30"
+• "afternoon" → "14:00"  "evening" → "18:30"  "now/soon" → null
 
 PRIORITY (tasks only):
 • urgent / asap / critical → "critical"
 • important / today / need to → "high"
 • should / plan to → "medium"
 • someday / eventually / maybe → "low"
-• When in doubt → "medium"
+• default → "medium"
 
-EXAMPLE INPUT:  "grab groceries, call dentist at 2pm, I'm feeling burned out, start learning piano"
-EXAMPLE OUTPUT: [{"itemType":"task","title":"Grab groceries","description":null,"priority":"medium","dueTime":null,"moodScore":null,"energyLevel":null},{"itemType":"task","title":"Call dentist","description":null,"priority":"high","dueTime":"14:00","moodScore":null,"energyLevel":null},{"itemType":"journal","title":"Feeling burned out","description":"Feeling burned out today","priority":null,"dueTime":null,"moodScore":-3,"energyLevel":3},{"itemType":"project","title":"Learn Piano","description":"Start learning piano","priority":null,"dueTime":null,"moodScore":null,"energyLevel":null}]`;
+TITLE RULES — titles must be clean and short:
+• BAD: "This works quite goodSo I should do meditation at 8 pm today I should"
+• GOOD: "Meditate at 8pm"
+• BAD: "do someLamp lighting about nowAndI should check on the kids before I sle"
+• GOOD: "Adjust lamp lighting" + "Check on kids before sleep"
+
+EXAMPLE INPUT:  "grab groceries and call dentist at 2pm I'm feeling really burned out also I want to start learning piano"
+EXAMPLE OUTPUT: [{"itemType":"task","title":"Grab groceries","description":null,"priority":"medium","dueTime":null,"moodScore":null,"energyLevel":null},{"itemType":"task","title":"Call dentist","description":null,"priority":"high","dueTime":"14:00","moodScore":null,"energyLevel":null},{"itemType":"journal","title":"Feeling burned out","description":"Feeling really burned out","priority":null,"dueTime":null,"moodScore":-3,"energyLevel":3},{"itemType":"project","title":"Learn piano","description":"Start learning piano","priority":null,"dueTime":null,"moodScore":null,"energyLevel":null}]`;
 
 async function classifyWithOpenRouter(rawInput: string): Promise<CaptureItem[] | null> {
   if (!OPENROUTER_KEY) return null;
