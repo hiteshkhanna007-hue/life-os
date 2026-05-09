@@ -1,12 +1,20 @@
 import type { VercelRequest, VercelResponse } from "@vercel/node";
 import { createClient } from "@supabase/supabase-js";
 
-const USER_ID = "00000000-0000-0000-0000-000000000001";
+const FALLBACK_USER_ID = "00000000-0000-0000-0000-000000000001";
 
 const supabase = createClient(
   process.env.SUPABASE_URL!,
   process.env.SUPABASE_ANON_KEY!
 );
+
+async function getUserId(req: VercelRequest): Promise<string> {
+  const auth = req.headers.authorization;
+  if (!auth?.startsWith("Bearer ")) return FALLBACK_USER_ID;
+  const token = auth.slice(7);
+  const { data: { user } } = await supabase.auth.getUser(token);
+  return user?.id ?? FALLBACK_USER_ID;
+}
 
 const OPENROUTER_KEY = process.env.OPENROUTER_API_KEY;
 const OPENROUTER_MODEL = process.env.OPENROUTER_MODEL ?? "google/gemini-2.5-flash";
@@ -140,16 +148,16 @@ function rowToReminder(r: Record<string, unknown>) {
   };
 }
 
-async function buildSnapshot() {
+async function buildSnapshot(userId: string) {
   const today = new Date().toISOString().slice(0, 10);
   const [tasksRes, projectsRes, journalRes, calRes, focusRes, eventsRes, remindersRes] = await Promise.all([
-    supabase.from("tasks").select("*").eq("user_id", USER_ID).is("deleted_at", null).neq("status", "archived").order("created_at"),
-    supabase.from("projects").select("*").eq("user_id", USER_ID).eq("status", "active"),
-    supabase.from("journal_entries").select("*").eq("user_id", USER_ID).order("created_at", { ascending: false }).limit(7),
-    supabase.from("calendar_blocks").select("*").eq("user_id", USER_ID).order("start_time"),
-    supabase.from("focus_sessions").select("*").eq("user_id", USER_ID).eq("status", "active").order("started_at", { ascending: false }).limit(1),
+    supabase.from("tasks").select("*").eq("user_id", userId).is("deleted_at", null).neq("status", "archived").order("created_at"),
+    supabase.from("projects").select("*").eq("user_id", userId).eq("status", "active"),
+    supabase.from("journal_entries").select("*").eq("user_id", userId).order("created_at", { ascending: false }).limit(7),
+    supabase.from("calendar_blocks").select("*").eq("user_id", userId).order("start_time"),
+    supabase.from("focus_sessions").select("*").eq("user_id", userId).eq("status", "active").order("started_at", { ascending: false }).limit(1),
     supabase.from("agent_messages").select("*").order("timestamp", { ascending: false }).limit(8),
-    supabase.from("reminders").select("*").eq("user_id", USER_ID).eq("status", "pending").gte("scheduled_time", today).order("scheduled_time").limit(10),
+    supabase.from("reminders").select("*").eq("user_id", userId).eq("status", "pending").gte("scheduled_time", today).order("scheduled_time").limit(10),
   ]);
 
   const taskRows = (tasksRes.data ?? []) as Record<string, unknown>[];
@@ -241,24 +249,45 @@ type CaptureItem = {
   energyLevel?: number | null;
 };
 
-const CLASSIFY_SYSTEM = `You are Life OS's brain-dump classifier. The user empties their mind in one go — split it into separate, actionable items.
+const CLASSIFY_SYSTEM = `You are Life OS's capture classifier. Your ONLY job: parse a brain dump into a JSON array of individual action items.
 
-Return ONLY a valid JSON array (no markdown, no prose). Each element must have:
+RETURN ONLY a raw JSON array — no markdown fences, no explanation text, nothing else.
+
+Each object must have exactly these fields:
   itemType: "task" | "journal" | "project" | "reminder"
-  title: string (concise, imperative for tasks)
+  title: string  (short imperative for tasks/reminders; descriptive for journal/project)
   description: string | null
-  priority: "critical" | "high" | "medium" | "low" | null  (tasks only)
-  dueTime: "HH:MM" | null  (24h, extract from natural language — "at 3pm" → "15:00", "tonight" → "20:00")
-  moodScore: number -5..5 | null  (journal only)
-  energyLevel: number 1..10 | null  (journal only)
+  priority: "critical" | "high" | "medium" | "low" | null  (tasks only; null for all others)
+  dueTime: "HH:MM" | null  (24h format; extract from natural language; null if no time mentioned)
+  moodScore: number | null  (-5 to +5; journal only; null for all others)
+  energyLevel: number | null  (1 to 10; journal only; null for all others)
 
-Rules:
-- Split compound inputs. "Buy milk and call dentist at 3pm" → 2 items.
-- Emotional / reflective statements → journal.
-- "start a X project" or "I want to build Y" → project.
-- Times + notification intent ("remind me to…") → reminder.
-- Everything else → task.
-- Never merge distinct intents into one item.`;
+SPLITTING — apply before classifying:
+• Split on commas, semicolons, "and", "also", "plus", "I need to", "I should", "I want to"
+• Each distinct thought = one separate item
+• NEVER merge two different actions into a single item
+
+CLASSIFYING:
+• Emotional / reflective / how-I-feel statement → journal
+• "start a ...", "I want to build/launch/create ..." → project
+• "remind me" + specific time → reminder
+• Everything else → task
+
+TIME EXTRACTION:
+• "at 3pm" → "15:00"    "at 10am" → "10:00"    "at 10:30" → "10:30"
+• "tonight" → "20:00"   "this morning" → "09:00"  "noon" / "lunch" → "12:30"
+• "afternoon" → "14:00"  "evening" → "18:30"
+• No time mentioned → null
+
+PRIORITY (tasks only):
+• urgent / asap / critical → "critical"
+• important / today / need to → "high"
+• should / plan to → "medium"
+• someday / eventually / maybe → "low"
+• When in doubt → "medium"
+
+EXAMPLE INPUT:  "grab groceries, call dentist at 2pm, I'm feeling burned out, start learning piano"
+EXAMPLE OUTPUT: [{"itemType":"task","title":"Grab groceries","description":null,"priority":"medium","dueTime":null,"moodScore":null,"energyLevel":null},{"itemType":"task","title":"Call dentist","description":null,"priority":"high","dueTime":"14:00","moodScore":null,"energyLevel":null},{"itemType":"journal","title":"Feeling burned out","description":"Feeling burned out today","priority":null,"dueTime":null,"moodScore":-3,"energyLevel":3},{"itemType":"project","title":"Learn Piano","description":"Start learning piano","priority":null,"dueTime":null,"moodScore":null,"energyLevel":null}]`;
 
 async function classifyWithOpenRouter(rawInput: string): Promise<CaptureItem[] | null> {
   if (!OPENROUTER_KEY) return null;
@@ -292,32 +321,32 @@ async function classifyWithOpenRouter(rawInput: string): Promise<CaptureItem[] |
 
 // ── route handlers ────────────────────────────────────────────────────────────
 
-async function handleGetToday(res: VercelResponse) {
-  const snap = await buildSnapshot();
+async function handleGetToday(userId: string, res: VercelResponse) {
+  const snap = await buildSnapshot(userId);
   res.json(snap);
 }
 
-async function handleGetTasks(res: VercelResponse) {
-  const { data } = await supabase.from("tasks").select("*").eq("user_id", USER_ID).is("deleted_at", null).order("created_at");
+async function handleGetTasks(userId: string, res: VercelResponse) {
+  const { data } = await supabase.from("tasks").select("*").eq("user_id", userId).is("deleted_at", null).order("created_at");
   res.json((data ?? []).map(rowToTask));
 }
 
-async function handleGetProjects(res: VercelResponse) {
-  const snap = await buildSnapshot();
+async function handleGetProjects(userId: string, res: VercelResponse) {
+  const snap = await buildSnapshot(userId);
   res.json(snap.projects);
 }
 
-async function handleGetJournalEntries(res: VercelResponse) {
-  const { data } = await supabase.from("journal_entries").select("*").eq("user_id", USER_ID).order("created_at", { ascending: false });
+async function handleGetJournalEntries(userId: string, res: VercelResponse) {
+  const { data } = await supabase.from("journal_entries").select("*").eq("user_id", userId).order("created_at", { ascending: false });
   res.json((data ?? []).map(rowToJournal));
 }
 
-async function handlePostTask(req: VercelRequest, res: VercelResponse) {
+async function handlePostTask(userId: string, req: VercelRequest, res: VercelResponse) {
   const body = req.body as { title: string; projectId?: string | null; dueTime?: string | null };
   const title = body.title?.trim();
   if (!title) { res.status(400).json({ error: "title required" }); return; }
   const { data, error } = await supabase.from("tasks").insert({
-    user_id: USER_ID,
+    user_id: userId,
     title,
     description: "Created from planner.",
     status: "todo",
@@ -334,9 +363,9 @@ async function handlePostTask(req: VercelRequest, res: VercelResponse) {
   res.json(rowToTask(data as Record<string, unknown>));
 }
 
-async function handleCompleteTask(taskId: string, res: VercelResponse) {
+async function handleCompleteTask(userId: string, taskId: string, res: VercelResponse) {
   const { data: task, error } = await supabase
-    .from("tasks").select("*").eq("id", taskId).eq("user_id", USER_ID).single();
+    .from("tasks").select("*").eq("id", taskId).eq("user_id", userId).single();
   if (error || !task) { res.status(404).json({ error: "Task not found" }); return; }
   const t = task as Record<string, unknown>;
   const actualPomos = Math.max((t.actual_pomodoros as number) ?? 0, (t.estimated_pomodoros as number) ?? 1);
@@ -349,19 +378,18 @@ async function handleCompleteTask(taskId: string, res: VercelResponse) {
   res.json(rowToTask(updated as Record<string, unknown>));
 }
 
-async function handleStartFocus(req: VercelRequest, res: VercelResponse) {
+async function handleStartFocus(userId: string, req: VercelRequest, res: VercelResponse) {
   const body = (req.body ?? {}) as { plannedDuration?: number };
   const plannedDuration = Math.min(120, Math.max(5, Math.round(body.plannedDuration ?? 25)));
-  // find next task
   const { data: tasks } = await supabase
-    .from("tasks").select("*").eq("user_id", USER_ID).in("status", ["todo", "in_progress"])
+    .from("tasks").select("*").eq("user_id", userId).in("status", ["todo", "in_progress"])
     .order("created_at").limit(1);
   const nextTask = tasks?.[0] as Record<string, unknown> | undefined;
   if (nextTask) {
     await supabase.from("tasks").update({ status: "in_progress" }).eq("id", nextTask.id);
   }
   const { data: session } = await supabase.from("focus_sessions").insert({
-    user_id: USER_ID,
+    user_id: userId,
     started_at: now(),
     planned_duration: plannedDuration,
     status: "active",
@@ -372,7 +400,7 @@ async function handleStartFocus(req: VercelRequest, res: VercelResponse) {
   res.json(rowToFocusSession(session as Record<string, unknown>));
 }
 
-async function handleCompleteFocus(sessionId: string, res: VercelResponse) {
+async function handleCompleteFocus(userId: string, sessionId: string, res: VercelResponse) {
   const { data: session } = await supabase.from("focus_sessions").select("*").eq("id", sessionId).single();
   if (session) {
     const s = session as Record<string, unknown>;
@@ -392,14 +420,14 @@ async function handleCompleteFocus(sessionId: string, res: VercelResponse) {
       await pushEvent("focus", "Finished an open focus block");
     }
   }
-  const snap = await buildSnapshot();
+  const snap = await buildSnapshot(userId);
   res.json(snap);
 }
 
-async function handlePostJournal(req: VercelRequest, res: VercelResponse) {
+async function handlePostJournal(userId: string, req: VercelRequest, res: VercelResponse) {
   const body = req.body as { content: string; moodScore: number; energyLevel: number };
   const { data } = await supabase.from("journal_entries").insert({
-    user_id: USER_ID,
+    user_id: userId,
     entry_type: "freeform",
     content: body.content.trim(),
     mood_score: body.moodScore,
@@ -409,37 +437,37 @@ async function handlePostJournal(req: VercelRequest, res: VercelResponse) {
   res.json(rowToJournal(data as Record<string, unknown>));
 }
 
-async function handlePostProject(req: VercelRequest, res: VercelResponse) {
+async function handlePostProject(userId: string, req: VercelRequest, res: VercelResponse) {
   const body = req.body as { name: string; lifeArea: string; intention?: string };
   const colors = ["#7f8f7a", "#b08b63", "#a37c74", "#6f8795"];
-  const { data: existing } = await supabase.from("projects").select("id").eq("user_id", USER_ID);
+  const { data: existing } = await supabase.from("projects").select("id").eq("user_id", userId);
   const color = colors[(existing?.length ?? 0) % 4];
   const { data } = await supabase.from("projects").insert({
-    user_id: USER_ID,
+    user_id: userId,
     name: body.name.trim(),
     life_area: body.lifeArea,
     color,
     description: body.intention?.trim() || "Keep this area visible and easy to act on.",
     status: "active",
   }).select().single();
-  const { data: taskRows } = await supabase.from("tasks").select("*").eq("user_id", USER_ID);
+  const { data: taskRows } = await supabase.from("tasks").select("*").eq("user_id", userId);
   await pushEvent("life", `Created project: ${body.name}`);
   res.json(rowToProject(data as Record<string, unknown>, (taskRows ?? []) as Record<string, unknown>[]));
 }
 
-async function routeItem(item: CaptureItem, rawInput: string): Promise<{ routedTo: string; dueTime: string | null }> {
+async function routeItem(userId: string, item: CaptureItem, rawInput: string): Promise<{ routedTo: string; dueTime: string | null }> {
   const lower = rawInput.toLowerCase();
   const dueTime = item.dueTime ?? null;
 
   if (item.itemType === "journal") {
-    await supabase.from("journal_entries").insert({ user_id: USER_ID, entry_type: "freeform", content: item.description?.trim() || item.title, mood_score: item.moodScore ?? inferMood(rawInput), energy_level: item.energyLevel ?? 6 });
+    await supabase.from("journal_entries").insert({ user_id: userId, entry_type: "freeform", content: item.description?.trim() || item.title, mood_score: item.moodScore ?? inferMood(rawInput), energy_level: item.energyLevel ?? 6 });
     await pushEvent("capture", `Journal: ${item.title}`);
     return { routedTo: "journal", dueTime: null };
   }
   if (item.itemType === "project") {
-    const { data: existing } = await supabase.from("projects").select("id").eq("user_id", USER_ID);
+    const { data: existing } = await supabase.from("projects").select("id").eq("user_id", userId);
     const color = ["#7f8f7a", "#b08b63", "#a37c74", "#6f8795"][(existing?.length ?? 0) % 4];
-    await supabase.from("projects").insert({ user_id: USER_ID, name: item.title.trim().slice(0, 42) || "New Project", life_area: "other", color, description: item.description?.trim() || item.title, status: "active" });
+    await supabase.from("projects").insert({ user_id: userId, name: item.title.trim().slice(0, 42) || "New Project", life_area: "other", color, description: item.description?.trim() || item.title, status: "active" });
     await pushEvent("capture", `Project: ${item.title}`);
     return { routedTo: "project", dueTime: null };
   }
@@ -447,14 +475,14 @@ async function routeItem(item: CaptureItem, rawInput: string): Promise<{ routedT
     const today = new Date().toISOString().slice(0, 10);
     const scheduledTime = dueTime ? `${today}T${dueTime}:00` : null;
     if (scheduledTime) {
-      await supabase.from("reminders").insert({ user_id: USER_ID, title: item.title.trim().slice(0, 72), trigger_type: "time", scheduled_time: scheduledTime, action_type: "notification", action_payload: {}, status: "pending" });
+      await supabase.from("reminders").insert({ user_id: userId, title: item.title.trim().slice(0, 72), trigger_type: "time", scheduled_time: scheduledTime, action_type: "notification", action_payload: {}, status: "pending" });
       await pushEvent("capture", `Reminder: ${item.title}`);
     }
     return { routedTo: "reminder", dueTime };
   }
   // task (default)
-  const { data: proj } = await supabase.from("projects").select("id").eq("user_id", USER_ID).limit(1);
-  await supabase.from("tasks").insert({ user_id: USER_ID, title: item.title.trim().slice(0, 72) || rawInput.slice(0, 72), description: item.description?.trim() || "Created through capture.", status: "todo", priority: item.priority ?? inferPriority(rawInput), due_time: dueTime, estimated_pomodoros: lower.includes("deep") ? 2 : 1, actual_pomodoros: 0, project_id: proj?.[0]?.id ?? null, tags: ["capture", "ai"], energy_required: lower.includes("deep") ? "high" : "medium" });
+  const { data: proj } = await supabase.from("projects").select("id").eq("user_id", userId).limit(1);
+  await supabase.from("tasks").insert({ user_id: userId, title: item.title.trim().slice(0, 72) || rawInput.slice(0, 72), description: item.description?.trim() || "Created through capture.", status: "todo", priority: item.priority ?? inferPriority(rawInput), due_time: dueTime, estimated_pomodoros: lower.includes("deep") ? 2 : 1, actual_pomodoros: 0, project_id: proj?.[0]?.id ?? null, tags: ["capture", "ai"], energy_required: lower.includes("deep") ? "high" : "medium" });
   await pushEvent("capture", `Task: ${item.title}`);
   return { routedTo: "task", dueTime };
 }
@@ -462,7 +490,6 @@ async function routeItem(item: CaptureItem, rawInput: string): Promise<{ routedT
 function heuristicItems(rawInput: string): CaptureItem[] {
   const lower = rawInput.toLowerCase();
   const items: CaptureItem[] = [];
-  // Split on common separators for multi-thought dumps
   const sentences = rawInput.split(/[,;]|\band\b|\balso\b/i).map(s => s.trim()).filter(Boolean);
   for (const s of sentences) {
     const l = s.toLowerCase();
@@ -496,10 +523,10 @@ function heuristicItems(rawInput: string): CaptureItem[] {
       items.push({ itemType: "task", title: s.slice(0, 72), priority: inferPriority(s), dueTime });
     }
   }
-  return items.length ? items : [{ itemType: "task", title: lower.includes("tonight") ? rawInput.slice(0, 72) : rawInput.slice(0, 72), priority: inferPriority(rawInput), dueTime: lower.includes("tonight") ? "20:00" : null }];
+  return items.length ? items : [{ itemType: "task", title: rawInput.slice(0, 72), priority: inferPriority(rawInput), dueTime: lower.includes("tonight") ? "20:00" : null }];
 }
 
-async function handleCapture(req: VercelRequest, res: VercelResponse) {
+async function handleCapture(userId: string, req: VercelRequest, res: VercelResponse) {
   const body = req.body as { rawInput: string };
   const rawInput = body.rawInput?.trim();
   if (!rawInput) { res.status(400).json({ error: "rawInput required" }); return; }
@@ -508,22 +535,22 @@ async function handleCapture(req: VercelRequest, res: VercelResponse) {
   try { aiItems = await classifyWithOpenRouter(rawInput); } catch { /* fallback */ }
 
   const items = (aiItems && aiItems.length > 0) ? aiItems : heuristicItems(rawInput);
-  const results = await Promise.all(items.map(item => routeItem(item, rawInput)));
+  const results = await Promise.all(items.map(item => routeItem(userId, item, rawInput)));
 
-  res.json({ items: results, snapshot: await buildSnapshot() });
+  res.json({ items: results, snapshot: await buildSnapshot(userId) });
 }
 
-async function handleDeleteTask(taskId: string, res: VercelResponse) {
-  await supabase.from("tasks").update({ deleted_at: now() }).eq("id", taskId).eq("user_id", USER_ID);
+async function handleDeleteTask(userId: string, taskId: string, res: VercelResponse) {
+  await supabase.from("tasks").update({ deleted_at: now() }).eq("id", taskId).eq("user_id", userId);
   res.json({ ok: true });
 }
 
-async function handlePostReminder(req: VercelRequest, res: VercelResponse) {
+async function handlePostReminder(userId: string, req: VercelRequest, res: VercelResponse) {
   const body = req.body as { title: string; scheduledTime: string };
   const title = body.title?.trim();
   if (!title) { res.status(400).json({ error: "title required" }); return; }
   const { data, error } = await supabase.from("reminders").insert({
-    user_id: USER_ID,
+    user_id: userId,
     title,
     trigger_type: "time",
     scheduled_time: body.scheduledTime,
@@ -541,7 +568,7 @@ async function handlePostReminder(req: VercelRequest, res: VercelResponse) {
 export default async function handler(req: VercelRequest, res: VercelResponse) {
   res.setHeader("Access-Control-Allow-Origin", "*");
   res.setHeader("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS");
-  res.setHeader("Access-Control-Allow-Headers", "Content-Type");
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
   if (req.method === "OPTIONS") { res.status(200).end(); return; }
 
   const path = (req.url ?? "/").split("?")[0];
@@ -549,26 +576,29 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
   try {
     if (method === "GET" && path === "/health") return res.json({ ok: true });
-    if (method === "GET" && path === "/v1/today") return handleGetToday(res);
-    if (method === "GET" && path === "/v1/tasks") return handleGetTasks(res);
-    if (method === "GET" && path === "/v1/projects") return handleGetProjects(res);
-    if (method === "GET" && path === "/v1/journal/entries") return handleGetJournalEntries(res);
-    if (method === "POST" && path === "/v1/tasks") return handlePostTask(req, res);
-    if (method === "POST" && path === "/v1/journal/entries") return handlePostJournal(req, res);
-    if (method === "POST" && path === "/v1/projects") return handlePostProject(req, res);
-    if (method === "POST" && path === "/v1/reminders") return handlePostReminder(req, res);
-    if (method === "POST" && path === "/v1/focus/sessions") return handleStartFocus(req, res);
-    if (method === "POST" && path === "/v1/capture") return handleCapture(req, res);
+
+    const userId = await getUserId(req);
+
+    if (method === "GET" && path === "/v1/today") return handleGetToday(userId, res);
+    if (method === "GET" && path === "/v1/tasks") return handleGetTasks(userId, res);
+    if (method === "GET" && path === "/v1/projects") return handleGetProjects(userId, res);
+    if (method === "GET" && path === "/v1/journal/entries") return handleGetJournalEntries(userId, res);
+    if (method === "POST" && path === "/v1/tasks") return handlePostTask(userId, req, res);
+    if (method === "POST" && path === "/v1/journal/entries") return handlePostJournal(userId, req, res);
+    if (method === "POST" && path === "/v1/projects") return handlePostProject(userId, req, res);
+    if (method === "POST" && path === "/v1/reminders") return handlePostReminder(userId, req, res);
+    if (method === "POST" && path === "/v1/focus/sessions") return handleStartFocus(userId, req, res);
+    if (method === "POST" && path === "/v1/capture") return handleCapture(userId, req, res);
 
     // /v1/tasks/:id and /v1/tasks/:id/complete
     const taskIdMatch = path.match(/^\/v1\/tasks\/([^/]+)$/);
-    if (method === "DELETE" && taskIdMatch) return handleDeleteTask(taskIdMatch[1], res);
+    if (method === "DELETE" && taskIdMatch) return handleDeleteTask(userId, taskIdMatch[1], res);
     const taskCompleteMatch = path.match(/^\/v1\/tasks\/([^/]+)\/complete$/);
-    if (method === "POST" && taskCompleteMatch) return handleCompleteTask(taskCompleteMatch[1], res);
+    if (method === "POST" && taskCompleteMatch) return handleCompleteTask(userId, taskCompleteMatch[1], res);
 
     // /v1/focus/sessions/:id/complete
     const focusCompleteMatch = path.match(/^\/v1\/focus\/sessions\/([^/]+)\/complete$/);
-    if (method === "POST" && focusCompleteMatch) return handleCompleteFocus(focusCompleteMatch[1], res);
+    if (method === "POST" && focusCompleteMatch) return handleCompleteFocus(userId, focusCompleteMatch[1], res);
 
     res.status(404).json({ error: "Not found" });
   } catch (err) {

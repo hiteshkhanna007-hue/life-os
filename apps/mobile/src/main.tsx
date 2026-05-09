@@ -1,5 +1,7 @@
 import React, { useEffect, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
+import type { Session } from "@supabase/supabase-js";
+import { supabase } from "./supabase.js";
 import "./styles.css";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
@@ -182,9 +184,69 @@ function MoonIcon() {
   );
 }
 
+// ── Login screen ──────────────────────────────────────────────────────────────
+
+function LoginScreen() {
+  const [email, setEmail] = useState("");
+  const [sent, setSent] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+
+  async function handleSend() {
+    const trimmed = email.trim();
+    if (!trimmed) return;
+    setBusy(true);
+    setErr(null);
+    const { error } = await supabase.auth.signInWithOtp({
+      email: trimmed,
+      options: { emailRedirectTo: window.location.origin },
+    });
+    setBusy(false);
+    if (error) { setErr(error.message); return; }
+    setSent(true);
+  }
+
+  return (
+    <div className="login-screen">
+      <div className="login-orb" />
+      <div className="login-body">
+        <h1 className="login-title">Life <em>OS</em></h1>
+        <p className="login-sub">Your personal command centre.</p>
+        {sent ? (
+          <div className="login-sent">
+            <div className="login-sent-icon">✉</div>
+            <p className="login-sent-title">Check your email</p>
+            <p className="login-sent-sub">We sent a sign-in link to <strong>{email}</strong></p>
+          </div>
+        ) : (
+          <div className="login-form">
+            <input
+              className="login-input"
+              type="email"
+              placeholder="your@email.com"
+              value={email}
+              onChange={e => setEmail(e.target.value)}
+              onKeyDown={e => { if (e.key === "Enter") void handleSend(); }}
+              autoComplete="email"
+              autoFocus
+            />
+            {err && <p className="login-error">{err}</p>}
+            <button className="login-btn" disabled={busy || !email.trim()} onClick={handleSend}>
+              {busy ? "Sending…" : "Send magic link"}
+            </button>
+            <p className="login-hint">No password needed — we'll email you a link.</p>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 // ── App ────────────────────────────────────────────────────────────────────────
 
 function App() {
+  const [session, setSession] = useState<Session | null>(null);
+  const [authLoading, setAuthLoading] = useState(true);
   const [view, setView] = useState<View>("today");
   const [drawer, setDrawer] = useState<DrawerType>(null);
   const [captureOpen, setCaptureOpen] = useState(false);
@@ -193,10 +255,38 @@ function App() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  // ── Auth ──────────────────────────────────────────────────────────────────
+  useEffect(() => {
+    void supabase.auth.getSession().then(({ data }) => {
+      setSession(data.session);
+      setAuthLoading(false);
+    });
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, newSession) => {
+      setSession(newSession);
+      setAuthLoading(false);
+    });
+    return () => subscription.unsubscribe();
+  }, []);
+
+  // Reload snapshot whenever session changes (new login or token refresh)
+  useEffect(() => {
+    if (session) void loadSnapshot();
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [session?.access_token]);
+
+  // ── Auth-aware fetch ───────────────────────────────────────────────────────
+  function authFetch(path: string, options: RequestInit = {}): Promise<Response> {
+    const headers: Record<string, string> = {
+      ...(options.headers as Record<string, string> ?? {}),
+    };
+    if (session?.access_token) headers["Authorization"] = `Bearer ${session.access_token}`;
+    return fetch(path, { ...options, headers });
+  }
+
   async function loadSnapshot() {
     try {
       setError(null);
-      const res = await fetch("/v1/today");
+      const res = await authFetch("/v1/today");
       if (!res.ok) throw new Error("Could not reach the API.");
       setSnapshot(await res.json());
     } catch (err) {
@@ -206,12 +296,12 @@ function App() {
     }
   }
 
-  useEffect(() => { void loadSnapshot(); }, []);
+  useEffect(() => { if (!session) void loadSnapshot(); }, []);
 
   async function mutate(path: string, body?: unknown, method = "POST") {
     setBusy(true);
     try {
-      await fetch(path, {
+      await authFetch(path, {
         method,
         headers: body ? { "Content-Type": "application/json" } : undefined,
         body: body ? JSON.stringify(body) : undefined,
@@ -224,14 +314,14 @@ function App() {
   }
 
   async function deleteTask(id: string) {
-    await fetch(`/v1/tasks/${id}`, { method: "DELETE" });
+    await authFetch(`/v1/tasks/${id}`, { method: "DELETE" });
     await loadSnapshot();
   }
 
   async function capture(rawInput: string): Promise<{ items: Array<{ routedTo: string; dueTime: string | null }> } | null> {
     setBusy(true);
     try {
-      const res = await fetch("/v1/capture", {
+      const res = await authFetch("/v1/capture", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ rawInput }),
@@ -246,12 +336,20 @@ function App() {
     }
   }
 
+  async function signOut() {
+    await supabase.auth.signOut();
+    setSnapshot(null);
+    setLoading(true);
+  }
+
+  if (authLoading) {
+    return <div className="center-screen"><p>Opening Life OS</p></div>;
+  }
+  if (!session) {
+    return <LoginScreen />;
+  }
   if (loading) {
-    return (
-      <div className="center-screen">
-        <p>Opening Life OS</p>
-      </div>
-    );
+    return <div className="center-screen"><p>Loading your day…</p></div>;
   }
   if (error || !snapshot) {
     return (
@@ -262,8 +360,11 @@ function App() {
     );
   }
 
+  const userInitial = (session.user.email ?? "?")[0].toUpperCase();
+
   return (
     <div className="app">
+      <button className="user-badge" onClick={signOut} title="Sign out">{userInitial}</button>
       <div className="view-area">
         {view === "today"   && <TodayScreen snapshot={snapshot} onCompleteTask={(id) => mutate(`/v1/tasks/${id}/complete`)} onDeleteTask={deleteTask} />}
         {view === "tides"   && <TidesScreen snapshot={snapshot} onCompleteTask={(id) => mutate(`/v1/tasks/${id}/complete`)} onDeleteTask={deleteTask} onAddTask={() => setDrawer("task")} />}
