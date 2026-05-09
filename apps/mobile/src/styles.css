@@ -364,6 +364,35 @@ body {
   gap: 7px;
 }
 
+/* ── Swipe to delete ── */
+.swipe-wrapper {
+  position: relative;
+  overflow: hidden;
+  border-radius: 13px;
+  touch-action: pan-y;
+}
+.swipe-delete-bg {
+  position: absolute;
+  inset: 0;
+  background: oklch(0.50 0.20 20);
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  padding-right: 20px;
+  color: #fff;
+  font-size: 18px;
+  border-radius: 13px;
+}
+.swipe-inner {
+  position: relative;
+  z-index: 1;
+  transition: transform 0.25s cubic-bezier(0.34, 1.56, 0.64, 1);
+  will-change: transform;
+}
+.swipe-inner.swiping {
+  transition: none;
+}
+
 .tide-task-card {
   display: flex;
   align-items: center;

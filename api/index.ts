@@ -231,16 +231,36 @@ function inferMood(text: string) {
   return 0;
 }
 
-type CaptureClassification = {
-  itemType: "task" | "journal" | "project";
+type CaptureItem = {
+  itemType: "task" | "journal" | "project" | "reminder";
   title: string;
   description?: string | null;
   priority?: Priority;
+  dueTime?: string | null;  // "HH:MM"
   moodScore?: number | null;
   energyLevel?: number | null;
 };
 
-async function classifyWithOpenRouter(rawInput: string): Promise<CaptureClassification | null> {
+const CLASSIFY_SYSTEM = `You are Life OS's brain-dump classifier. The user empties their mind in one go — split it into separate, actionable items.
+
+Return ONLY a valid JSON array (no markdown, no prose). Each element must have:
+  itemType: "task" | "journal" | "project" | "reminder"
+  title: string (concise, imperative for tasks)
+  description: string | null
+  priority: "critical" | "high" | "medium" | "low" | null  (tasks only)
+  dueTime: "HH:MM" | null  (24h, extract from natural language — "at 3pm" → "15:00", "tonight" → "20:00")
+  moodScore: number -5..5 | null  (journal only)
+  energyLevel: number 1..10 | null  (journal only)
+
+Rules:
+- Split compound inputs. "Buy milk and call dentist at 3pm" → 2 items.
+- Emotional / reflective statements → journal.
+- "start a X project" or "I want to build Y" → project.
+- Times + notification intent ("remind me to…") → reminder.
+- Everything else → task.
+- Never merge distinct intents into one item.`;
+
+async function classifyWithOpenRouter(rawInput: string): Promise<CaptureItem[] | null> {
   if (!OPENROUTER_KEY) return null;
   const response = await fetch("https://openrouter.ai/api/v1/chat/completions", {
     method: "POST",
@@ -252,10 +272,10 @@ async function classifyWithOpenRouter(rawInput: string): Promise<CaptureClassifi
     },
     body: JSON.stringify({
       model: OPENROUTER_MODEL,
-      temperature: 0.25,
-      max_tokens: 500,
+      temperature: 0.2,
+      max_tokens: 1000,
       messages: [
-        { role: "system", content: "Classify a Life OS quick capture. Return only JSON with itemType task|journal|project, title, description, priority critical|high|medium|low, moodScore -5..5, energyLevel 1..10." },
+        { role: "system", content: CLASSIFY_SYSTEM },
         { role: "user", content: rawInput },
       ],
     }),
@@ -265,9 +285,9 @@ async function classifyWithOpenRouter(rawInput: string): Promise<CaptureClassifi
   const content = data.choices?.[0]?.message?.content;
   if (!content) return null;
   const jsonText = content.replace(/^```json\s*/i, "").replace(/^```\s*/i, "").replace(/\s*```$/i, "").trim();
-  const parsed = JSON.parse(jsonText) as CaptureClassification;
-  if (!["task", "journal", "project"].includes(parsed.itemType)) return null;
-  return parsed;
+  const parsed = JSON.parse(jsonText) as unknown;
+  const items = Array.isArray(parsed) ? parsed as CaptureItem[] : [parsed as CaptureItem];
+  return items.filter(i => ["task", "journal", "project", "reminder"].includes(i.itemType));
 }
 
 // ── route handlers ────────────────────────────────────────────────────────────
@@ -407,55 +427,95 @@ async function handlePostProject(req: VercelRequest, res: VercelResponse) {
   res.json(rowToProject(data as Record<string, unknown>, (taskRows ?? []) as Record<string, unknown>[]));
 }
 
+async function routeItem(item: CaptureItem, rawInput: string): Promise<{ routedTo: string; dueTime: string | null }> {
+  const lower = rawInput.toLowerCase();
+  const dueTime = item.dueTime ?? null;
+
+  if (item.itemType === "journal") {
+    await supabase.from("journal_entries").insert({ user_id: USER_ID, entry_type: "freeform", content: item.description?.trim() || item.title, mood_score: item.moodScore ?? inferMood(rawInput), energy_level: item.energyLevel ?? 6 });
+    await pushEvent("capture", `Journal: ${item.title}`);
+    return { routedTo: "journal", dueTime: null };
+  }
+  if (item.itemType === "project") {
+    const { data: existing } = await supabase.from("projects").select("id").eq("user_id", USER_ID);
+    const color = ["#7f8f7a", "#b08b63", "#a37c74", "#6f8795"][(existing?.length ?? 0) % 4];
+    await supabase.from("projects").insert({ user_id: USER_ID, name: item.title.trim().slice(0, 42) || "New Project", life_area: "other", color, description: item.description?.trim() || item.title, status: "active" });
+    await pushEvent("capture", `Project: ${item.title}`);
+    return { routedTo: "project", dueTime: null };
+  }
+  if (item.itemType === "reminder") {
+    const today = new Date().toISOString().slice(0, 10);
+    const scheduledTime = dueTime ? `${today}T${dueTime}:00` : null;
+    if (scheduledTime) {
+      await supabase.from("reminders").insert({ user_id: USER_ID, title: item.title.trim().slice(0, 72), trigger_type: "time", scheduled_time: scheduledTime, action_type: "notification", action_payload: {}, status: "pending" });
+      await pushEvent("capture", `Reminder: ${item.title}`);
+    }
+    return { routedTo: "reminder", dueTime };
+  }
+  // task (default)
+  const { data: proj } = await supabase.from("projects").select("id").eq("user_id", USER_ID).limit(1);
+  await supabase.from("tasks").insert({ user_id: USER_ID, title: item.title.trim().slice(0, 72) || rawInput.slice(0, 72), description: item.description?.trim() || "Created through capture.", status: "todo", priority: item.priority ?? inferPriority(rawInput), due_time: dueTime, estimated_pomodoros: lower.includes("deep") ? 2 : 1, actual_pomodoros: 0, project_id: proj?.[0]?.id ?? null, tags: ["capture", "ai"], energy_required: lower.includes("deep") ? "high" : "medium" });
+  await pushEvent("capture", `Task: ${item.title}`);
+  return { routedTo: "task", dueTime };
+}
+
+function heuristicItems(rawInput: string): CaptureItem[] {
+  const lower = rawInput.toLowerCase();
+  const items: CaptureItem[] = [];
+  // Split on common separators for multi-thought dumps
+  const sentences = rawInput.split(/[,;]|\band\b|\balso\b/i).map(s => s.trim()).filter(Boolean);
+  for (const s of sentences) {
+    const l = s.toLowerCase();
+    if (l.includes("feel") || l.includes("mood") || l.includes("stressed") || l.includes("overwhelmed") || l.includes("tired") || l.includes("journal")) {
+      items.push({ itemType: "journal", title: s.slice(0, 72), moodScore: inferMood(s), energyLevel: l.includes("tired") ? 3 : 6 });
+    } else if (l.includes("project") || l.includes("goal") || l.includes("start") || l.includes("launch") || l.includes("build")) {
+      items.push({ itemType: "project", title: s.replace(/project|goal|start|launch|build/gi, "").trim().slice(0, 42) || s.slice(0, 42) });
+    } else if (l.includes("remind") && /\d/.test(s)) {
+      const timeMatch = s.match(/(\d{1,2})(?::(\d{2}))?\s*(am|pm)/i);
+      let dueTime: string | null = null;
+      if (timeMatch) {
+        let h = parseInt(timeMatch[1]);
+        const m = parseInt(timeMatch[2] ?? "0");
+        if (timeMatch[3]?.toLowerCase() === "pm" && h < 12) h += 12;
+        if (timeMatch[3]?.toLowerCase() === "am" && h === 12) h = 0;
+        dueTime = `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}`;
+      }
+      items.push({ itemType: "reminder", title: s.slice(0, 72), dueTime });
+    } else {
+      const timeMatch = s.match(/(\d{1,2})(?::(\d{2}))?\s*(am|pm)/i);
+      let dueTime: string | null = null;
+      if (timeMatch) {
+        let h = parseInt(timeMatch[1]);
+        const m = parseInt(timeMatch[2] ?? "0");
+        if (timeMatch[3]?.toLowerCase() === "pm" && h < 12) h += 12;
+        if (timeMatch[3]?.toLowerCase() === "am" && h === 12) h = 0;
+        dueTime = `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}`;
+      } else if (l.includes("tonight")) {
+        dueTime = "20:00";
+      }
+      items.push({ itemType: "task", title: s.slice(0, 72), priority: inferPriority(s), dueTime });
+    }
+  }
+  return items.length ? items : [{ itemType: "task", title: lower.includes("tonight") ? rawInput.slice(0, 72) : rawInput.slice(0, 72), priority: inferPriority(rawInput), dueTime: lower.includes("tonight") ? "20:00" : null }];
+}
+
 async function handleCapture(req: VercelRequest, res: VercelResponse) {
   const body = req.body as { rawInput: string };
   const rawInput = body.rawInput?.trim();
   if (!rawInput) { res.status(400).json({ error: "rawInput required" }); return; }
 
-  let ai: CaptureClassification | null = null;
-  try { ai = await classifyWithOpenRouter(rawInput); } catch { /* fallback to heuristics */ }
+  let aiItems: CaptureItem[] | null = null;
+  try { aiItems = await classifyWithOpenRouter(rawInput); } catch { /* fallback */ }
 
-  if (ai?.itemType === "journal") {
-    const { data } = await supabase.from("journal_entries").insert({ user_id: USER_ID, entry_type: "freeform", content: ai.description?.trim() || rawInput, mood_score: ai.moodScore ?? inferMood(rawInput), energy_level: ai.energyLevel ?? 6 }).select().single();
-    await pushEvent("capture", `Routed capture to Journal: ${ai.title}`);
-    return res.json({ routedTo: "journal", created: rowToJournal(data as Record<string, unknown>), snapshot: await buildSnapshot() });
-  }
-  if (ai?.itemType === "project") {
-    const { data: existing } = await supabase.from("projects").select("id").eq("user_id", USER_ID);
-    const color = ["#7f8f7a", "#b08b63", "#a37c74", "#6f8795"][(existing?.length ?? 0) % 4];
-    const { data } = await supabase.from("projects").insert({ user_id: USER_ID, name: ai.title.trim().slice(0, 42) || "New Project", life_area: "other", color, description: ai.description?.trim() || rawInput, status: "active" }).select().single();
-    const { data: taskRows } = await supabase.from("tasks").select("*").eq("user_id", USER_ID);
-    await pushEvent("capture", `Routed capture to Life Lens: ${ai.title}`);
-    return res.json({ routedTo: "project", created: rowToProject(data as Record<string, unknown>, (taskRows ?? []) as Record<string, unknown>[]), snapshot: await buildSnapshot() });
-  }
-  if (ai?.itemType === "task") {
-    const { data: proj } = await supabase.from("projects").select("id").eq("user_id", USER_ID).limit(1);
-    const { data } = await supabase.from("tasks").insert({ user_id: USER_ID, title: ai.title.trim().slice(0, 72) || rawInput.slice(0, 72), description: ai.description?.trim() || "Created through AI capture.", status: "todo", priority: ai.priority ?? inferPriority(rawInput), estimated_pomodoros: rawInput.toLowerCase().includes("deep") ? 2 : 1, actual_pomodoros: 0, project_id: proj?.[0]?.id ?? null, tags: ["capture", "ai"], energy_required: rawInput.toLowerCase().includes("deep") ? "high" : "medium" }).select().single();
-    await pushEvent("capture", `Routed capture to Planner: ${ai.title}`);
-    return res.json({ routedTo: "task", created: rowToTask(data as Record<string, unknown>), snapshot: await buildSnapshot() });
-  }
+  const items = (aiItems && aiItems.length > 0) ? aiItems : heuristicItems(rawInput);
+  const results = await Promise.all(items.map(item => routeItem(item, rawInput)));
 
-  // heuristic fallback
-  const lower = rawInput.toLowerCase();
-  if (lower.includes("feel") || lower.includes("mood") || lower.includes("journal")) {
-    const { data } = await supabase.from("journal_entries").insert({ user_id: USER_ID, entry_type: "freeform", content: rawInput, mood_score: inferMood(rawInput), energy_level: lower.includes("tired") ? 3 : 6 }).select().single();
-    await pushEvent("capture", "Routed capture to Journal.");
-    return res.json({ routedTo: "journal", created: rowToJournal(data as Record<string, unknown>), snapshot: await buildSnapshot() });
-  }
-  if (lower.includes("project") || lower.includes("goal")) {
-    const { data: existing } = await supabase.from("projects").select("id").eq("user_id", USER_ID);
-    const color = ["#7f8f7a", "#b08b63", "#a37c74", "#6f8795"][(existing?.length ?? 0) % 4];
-    const name = rawInput.replace(/project|goal/gi, "").trim().slice(0, 42) || "New Project";
-    const { data } = await supabase.from("projects").insert({ user_id: USER_ID, name, life_area: "other", color, description: rawInput, status: "active" }).select().single();
-    const { data: taskRows } = await supabase.from("tasks").select("*").eq("user_id", USER_ID);
-    await pushEvent("capture", `Routed capture to Life Lens: ${name}`);
-    return res.json({ routedTo: "project", created: rowToProject(data as Record<string, unknown>, (taskRows ?? []) as Record<string, unknown>[]), snapshot: await buildSnapshot() });
-  }
+  res.json({ items: results, snapshot: await buildSnapshot() });
+}
 
-  const { data: proj } = await supabase.from("projects").select("id").eq("user_id", USER_ID).limit(1);
-  const { data } = await supabase.from("tasks").insert({ user_id: USER_ID, title: rawInput.slice(0, 72), description: "Created through capture.", status: "todo", priority: inferPriority(rawInput), due_time: lower.includes("tonight") ? "20:00" : null, estimated_pomodoros: lower.includes("deep") ? 2 : 1, actual_pomodoros: 0, project_id: proj?.[0]?.id ?? null, tags: ["capture"], energy_required: lower.includes("deep") ? "high" : "medium" }).select().single();
-  await pushEvent("capture", `Routed capture to Planner: ${rawInput.slice(0, 40)}`);
-  res.json({ routedTo: "task", created: rowToTask(data as Record<string, unknown>), snapshot: await buildSnapshot() });
+async function handleDeleteTask(taskId: string, res: VercelResponse) {
+  await supabase.from("tasks").update({ deleted_at: now() }).eq("id", taskId).eq("user_id", USER_ID);
+  res.json({ ok: true });
 }
 
 async function handlePostReminder(req: VercelRequest, res: VercelResponse) {
@@ -480,7 +540,7 @@ async function handlePostReminder(req: VercelRequest, res: VercelResponse) {
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
   res.setHeader("Access-Control-Allow-Origin", "*");
-  res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
+  res.setHeader("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS");
   res.setHeader("Access-Control-Allow-Headers", "Content-Type");
   if (req.method === "OPTIONS") { res.status(200).end(); return; }
 
@@ -500,7 +560,9 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     if (method === "POST" && path === "/v1/focus/sessions") return handleStartFocus(req, res);
     if (method === "POST" && path === "/v1/capture") return handleCapture(req, res);
 
-    // /v1/tasks/:id/complete
+    // /v1/tasks/:id and /v1/tasks/:id/complete
+    const taskIdMatch = path.match(/^\/v1\/tasks\/([^/]+)$/);
+    if (method === "DELETE" && taskIdMatch) return handleDeleteTask(taskIdMatch[1], res);
     const taskCompleteMatch = path.match(/^\/v1\/tasks\/([^/]+)\/complete$/);
     if (method === "POST" && taskCompleteMatch) return handleCompleteTask(taskCompleteMatch[1], res);
 

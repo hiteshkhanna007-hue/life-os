@@ -208,11 +208,11 @@ function App() {
 
   useEffect(() => { void loadSnapshot(); }, []);
 
-  async function mutate(path: string, body?: unknown) {
+  async function mutate(path: string, body?: unknown, method = "POST") {
     setBusy(true);
     try {
       await fetch(path, {
-        method: "POST",
+        method,
         headers: body ? { "Content-Type": "application/json" } : undefined,
         body: body ? JSON.stringify(body) : undefined,
       });
@@ -223,7 +223,12 @@ function App() {
     }
   }
 
-  async function capture(rawInput: string): Promise<{ routedTo: string } | null> {
+  async function deleteTask(id: string) {
+    await fetch(`/v1/tasks/${id}`, { method: "DELETE" });
+    await loadSnapshot();
+  }
+
+  async function capture(rawInput: string): Promise<{ items: Array<{ routedTo: string; dueTime: string | null }> } | null> {
     setBusy(true);
     try {
       const res = await fetch("/v1/capture", {
@@ -231,7 +236,7 @@ function App() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ rawInput }),
       });
-      const data = res.ok ? (await res.json() as { routedTo: string }) : null;
+      const data = res.ok ? (await res.json() as { items: Array<{ routedTo: string; dueTime: string | null }> }) : null;
       await loadSnapshot();
       return data;
     } catch {
@@ -260,8 +265,8 @@ function App() {
   return (
     <div className="app">
       <div className="view-area">
-        {view === "today"   && <TodayScreen snapshot={snapshot} onCompleteTask={(id) => mutate(`/v1/tasks/${id}/complete`)} />}
-        {view === "tides"   && <TidesScreen snapshot={snapshot} onCompleteTask={(id) => mutate(`/v1/tasks/${id}/complete`)} onAddTask={() => setDrawer("task")} />}
+        {view === "today"   && <TodayScreen snapshot={snapshot} onCompleteTask={(id) => mutate(`/v1/tasks/${id}/complete`)} onDeleteTask={deleteTask} />}
+        {view === "tides"   && <TidesScreen snapshot={snapshot} onCompleteTask={(id) => mutate(`/v1/tasks/${id}/complete`)} onDeleteTask={deleteTask} onAddTask={() => setDrawer("task")} />}
         {view === "threads" && <ThreadsScreen snapshot={snapshot} onAddProject={() => setDrawer("project")} />}
         {view === "reflect" && <ReflectScreen snapshot={snapshot} onAddJournal={() => setDrawer("journal")} />}
       </div>
@@ -272,7 +277,7 @@ function App() {
         <CaptureOverlay
           busy={busy}
           onClose={() => setCaptureOpen(false)}
-          onSubmit={(input) => capture(input)}
+          onSubmit={capture}
         />
       )}
 
@@ -324,7 +329,48 @@ const KIND_COLOR: Record<string, string> = {
   personal: "var(--amber)",
 };
 
-function TodayScreen({ snapshot, onCompleteTask }: { snapshot: Snapshot; onCompleteTask: (id: string) => void }) {
+// ── SwipeableTask ─────────────────────────────────────────────────────────────
+
+function SwipeableTask({ onDelete, children }: { onDelete: () => void; children: React.ReactNode }) {
+  const [dx, setDx] = useState(0);
+  const [swiping, setSwiping] = useState(false);
+  const startX = useRef(0);
+  const THRESHOLD = -72;
+
+  function onPointerDown(e: React.PointerEvent) {
+    startX.current = e.clientX;
+    setSwiping(true);
+    (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
+  }
+
+  function onPointerMove(e: React.PointerEvent) {
+    if (!swiping) return;
+    const delta = Math.min(0, e.clientX - startX.current);
+    setDx(delta);
+  }
+
+  function onPointerUp() {
+    setSwiping(false);
+    if (dx < THRESHOLD) {
+      onDelete();
+    } else {
+      setDx(0);
+    }
+  }
+
+  const deleteVisible = dx < THRESHOLD / 2;
+
+  return (
+    <div className="swipe-wrapper" onPointerDown={onPointerDown} onPointerMove={onPointerMove} onPointerUp={onPointerUp} onPointerCancel={onPointerUp}>
+      {deleteVisible && <div className="swipe-delete-bg">🗑</div>}
+      <div className={`swipe-inner${swiping ? " swiping" : ""}`} style={{ transform: `translateX(${dx}px)` }}>
+        {children}
+      </div>
+    </div>
+  );
+}
+
+function TodayScreen({ snapshot, onCompleteTask, onDeleteTask }: { snapshot: Snapshot; onCompleteTask: (id: string) => void; onDeleteTask: (id: string) => void }) {
   const [nowMs, setNowMs] = useState(Date.now());
   useEffect(() => {
     const id = setInterval(() => setNowMs(Date.now()), 30_000);
@@ -421,21 +467,25 @@ function TodayScreen({ snapshot, onCompleteTask }: { snapshot: Snapshot; onCompl
           })}
 
           {/* upcoming tasks as ghost pins */}
-          {snapshot.tasks.upcoming.filter(t => t.dueTime).map(task => {
+          {snapshot.tasks.upcoming.filter(t => t.dueTime && t.status !== "done").map(task => {
             const top = yFor(task.dueTime!);
             if (top < 0 || top > RIBBON_H) return null;
             return (
-              <div key={task.id} className="ribbon-event" style={{ top, height: 40, opacity: 0.7 }}>
-                <span className="ribbon-event-dot" style={{ background: "var(--ink-30)" }} />
-                <div className="ribbon-event-body">
-                  <div className="ribbon-event-title">{task.title}</div>
-                  <div className="ribbon-event-meta">task · {task.priority}</div>
-                </div>
-                <button
-                  className="ribbon-event-action"
-                  onClick={() => onCompleteTask(task.id)}
-                  aria-label={`Complete ${task.title}`}
-                >✓</button>
+              <div key={task.id} style={{ position: "absolute", top, left: 0, right: 0, height: 40 }}>
+                <SwipeableTask onDelete={() => onDeleteTask(task.id)}>
+                  <div className="ribbon-event" style={{ position: "static", height: 40, opacity: 0.85 }}>
+                    <span className="ribbon-event-dot" style={{ background: "var(--ink-30)" }} />
+                    <div className="ribbon-event-body">
+                      <div className="ribbon-event-title">{task.title}</div>
+                      <div className="ribbon-event-meta">task · {task.priority}</div>
+                    </div>
+                    <button
+                      className="ribbon-event-action"
+                      onClick={() => onCompleteTask(task.id)}
+                      aria-label={`Complete ${task.title}`}
+                    >✓</button>
+                  </div>
+                </SwipeableTask>
               </div>
             );
           })}
@@ -447,19 +497,21 @@ function TodayScreen({ snapshot, onCompleteTask }: { snapshot: Snapshot; onCompl
 
 // ── Tides screen ──────────────────────────────────────────────────────────────
 
-function TidesScreen({ snapshot, onCompleteTask, onAddTask }: {
+function TidesScreen({ snapshot, onCompleteTask, onDeleteTask, onAddTask }: {
   snapshot: Snapshot;
   onCompleteTask: (id: string) => void;
+  onDeleteTask: (id: string) => void;
   onAddTask: () => void;
 }) {
-  const high = snapshot.tasks.upcoming.filter(t => t.priority === "critical" || t.priority === "high");
-  const mid  = snapshot.tasks.upcoming.filter(t => t.priority === "medium");
-  const low  = snapshot.tasks.upcoming.filter(t => t.priority === "low");
+  const active = snapshot.tasks.upcoming.filter(t => t.status !== "done");
+  const high = active.filter(t => t.priority === "critical" || t.priority === "high");
+  const mid  = active.filter(t => t.priority === "medium");
+  const low  = active.filter(t => t.priority === "low");
 
   return (
     <div className="tides-screen">
       <div className="screen-header">
-        <div className="screen-eyebrow">{high.length + mid.length + low.length} currents · 3 tides</div>
+        <div className="screen-eyebrow">{active.length} currents · 3 tides</div>
         <h1 className="screen-title">What pulls<br /><em>today.</em></h1>
       </div>
 
@@ -468,26 +520,26 @@ function TidesScreen({ snapshot, onCompleteTask, onAddTask }: {
           tier="high" label="High tide" sub="do today"
           color="var(--amber)" tasks={high}
           projects={snapshot.projects}
-          onComplete={onCompleteTask} onAdd={onAddTask}
+          onComplete={onCompleteTask} onDelete={onDeleteTask} onAdd={onAddTask}
         />
         <TideBand
           tier="mid" label="Mid tide" sub="this week"
           color="var(--accent)" tasks={mid}
           projects={snapshot.projects}
-          onComplete={onCompleteTask} onAdd={onAddTask}
+          onComplete={onCompleteTask} onDelete={onDeleteTask} onAdd={onAddTask}
         />
         <TideBand
           tier="low" label="Low tide" sub="someday"
           color="var(--sky)" tasks={low}
           projects={snapshot.projects}
-          onComplete={onCompleteTask} onAdd={onAddTask}
+          onComplete={onCompleteTask} onDelete={onDeleteTask} onAdd={onAddTask}
         />
       </div>
     </div>
   );
 }
 
-function TideBand({ tier, label, sub, color, tasks, projects, onComplete, onAdd }: {
+function TideBand({ tier, label, sub, color, tasks, projects, onComplete, onDelete, onAdd }: {
   tier: "high" | "mid" | "low";
   label: string;
   sub: string;
@@ -495,6 +547,7 @@ function TideBand({ tier, label, sub, color, tasks, projects, onComplete, onAdd 
   tasks: Task[];
   projects: Project[];
   onComplete: (id: string) => void;
+  onDelete: (id: string) => void;
   onAdd: () => void;
 }) {
   return (
@@ -510,20 +563,22 @@ function TideBand({ tier, label, sub, color, tasks, projects, onComplete, onAdd 
         {tasks.map(task => {
           const project = projects.find(p => p.id === task.projectId);
           return (
-            <div key={task.id} className="tide-task-card">
-              <button
-                className={`tide-task-check${task.status === "done" ? " done" : ""}`}
-                onClick={() => onComplete(task.id)}
-                aria-label={`Complete ${task.title}`}
-              />
-              <div className="tide-task-body">
-                <div className="tide-task-title">{task.title}</div>
-                <div className="tide-task-meta">
-                  <span>{project?.name ?? "Inbox"}</span>
-                  {task.dueTime && <><span className="tide-task-sep">·</span><span>{formatShortTime(task.dueTime)}</span></>}
+            <SwipeableTask key={task.id} onDelete={() => onDelete(task.id)}>
+              <div className="tide-task-card">
+                <button
+                  className={`tide-task-check${task.status === "done" ? " done" : ""}`}
+                  onClick={() => onComplete(task.id)}
+                  aria-label={`Complete ${task.title}`}
+                />
+                <div className="tide-task-body">
+                  <div className="tide-task-title">{task.title}</div>
+                  <div className="tide-task-meta">
+                    <span>{project?.name ?? "Inbox"}</span>
+                    {task.dueTime && <><span className="tide-task-sep">·</span><span>{formatShortTime(task.dueTime)}</span></>}
+                  </div>
                 </div>
               </div>
-            </div>
+            </SwipeableTask>
           );
         })}
         <button className="tide-add-btn" onClick={onAdd}>+ add</button>
@@ -657,16 +712,18 @@ function ReflectScreen({ snapshot, onAddJournal }: { snapshot: Snapshot; onAddJo
 
 // ── Capture overlay ───────────────────────────────────────────────────────────
 
-const ROUTE_MAP: Record<string, { icon: string; dest: string }> = {
-  task:    { icon: "⤴", dest: "Tides" },
-  journal: { icon: "◑", dest: "Reflect" },
-  project: { icon: "✦", dest: "Threads" },
-};
+function routeCard(routedTo: string, dueTime: string | null): { icon: string; dest: string } {
+  if (routedTo === "journal")  return { icon: "◑", dest: "Reflect" };
+  if (routedTo === "project")  return { icon: "✦", dest: "Threads" };
+  if (routedTo === "reminder") return { icon: "⏰", dest: "Reminders" };
+  // task — if it has a time, it pins to Today; otherwise Tides
+  return dueTime ? { icon: "◷", dest: "Today" } : { icon: "⤴", dest: "Tides" };
+}
 
 function CaptureOverlay({ busy, onClose, onSubmit }: {
   busy: boolean;
   onClose: () => void;
-  onSubmit: (input: string) => Promise<{ routedTo: string } | null>;
+  onSubmit: (input: string) => Promise<{ items: Array<{ routedTo: string; dueTime: string | null }> } | null>;
 }) {
   const [phase, setPhase] = useState<CapturePhase>("idle");
   const [transcript, setTranscript] = useState("");
@@ -734,8 +791,16 @@ function CaptureOverlay({ busy, onClose, onSubmit }: {
     setPhase("routed");
     setRoutes([]); // show loading state while AI processes
     const result = await onSubmit(transcript);
-    const r = result?.routedTo ? (ROUTE_MAP[result.routedTo] ?? ROUTE_MAP.task) : ROUTE_MAP.task;
-    setRoutes([{ dest: r.dest, icon: r.icon, label: transcript.slice(0, 60) }]);
+    if (result?.items?.length) {
+      // Split transcript into rough per-item labels by sentence count
+      const parts = transcript.split(/[,;]|\band\b|\balso\b/i).map(s => s.trim()).filter(Boolean);
+      setRoutes(result.items.map((item, i) => {
+        const r = routeCard(item.routedTo, item.dueTime);
+        return { dest: r.dest, icon: r.icon, label: (parts[i] ?? transcript).slice(0, 60) };
+      }));
+    } else {
+      setRoutes([{ dest: "Tides", icon: "⤴", label: transcript.slice(0, 60) }]);
+    }
   }
 
   function startListening() {
