@@ -3,6 +3,7 @@ import { createClient } from "@supabase/supabase-js";
 import WebSocket from "ws";
 
 const FALLBACK_USER_ID = "00000000-0000-0000-0000-000000000001";
+const DEMO_RESET_AT = "2026-05-14T09:19:23.000Z";
 const SUPABASE_URL = process.env.SUPABASE_URL;
 const SUPABASE_ANON_KEY = process.env.SUPABASE_ANON_KEY;
 
@@ -162,14 +163,29 @@ function rowToReminder(r: Record<string, unknown>) {
 
 async function buildSnapshot(userId: string) {
   const today = new Date().toISOString().slice(0, 10);
+  const demoReset = userId === FALLBACK_USER_ID ? DEMO_RESET_AT : null;
+  let tasksQuery = supabase.from("tasks").select("*").eq("user_id", userId).is("deleted_at", null).neq("status", "archived");
+  let projectsQuery = supabase.from("projects").select("*").eq("user_id", userId).eq("status", "active");
+  let journalQuery = supabase.from("journal_entries").select("*").eq("user_id", userId);
+  let calQuery = supabase.from("calendar_blocks").select("*").eq("user_id", userId);
+  let focusQuery = supabase.from("focus_sessions").select("*").eq("user_id", userId).eq("status", "active");
+  let remindersQuery = supabase.from("reminders").select("*").eq("user_id", userId).eq("status", "pending").gte("scheduled_time", today);
+  if (demoReset) {
+    tasksQuery = tasksQuery.gte("created_at", demoReset);
+    projectsQuery = projectsQuery.gte("created_at", demoReset);
+    journalQuery = journalQuery.gte("created_at", demoReset);
+    calQuery = calQuery.gte("created_at", demoReset);
+    focusQuery = focusQuery.gte("created_at", demoReset);
+    remindersQuery = remindersQuery.gte("created_at", demoReset);
+  }
   const [tasksRes, projectsRes, journalRes, calRes, focusRes, eventsRes, remindersRes] = await Promise.all([
-    supabase.from("tasks").select("*").eq("user_id", userId).is("deleted_at", null).neq("status", "archived").order("created_at"),
-    supabase.from("projects").select("*").eq("user_id", userId).eq("status", "active"),
-    supabase.from("journal_entries").select("*").eq("user_id", userId).order("created_at", { ascending: false }).limit(7),
-    supabase.from("calendar_blocks").select("*").eq("user_id", userId).order("start_time"),
-    supabase.from("focus_sessions").select("*").eq("user_id", userId).eq("status", "active").order("started_at", { ascending: false }).limit(1),
+    tasksQuery.order("created_at"),
+    projectsQuery,
+    journalQuery.order("created_at", { ascending: false }).limit(7),
+    calQuery.order("start_time"),
+    focusQuery.order("started_at", { ascending: false }).limit(1),
     supabase.from("agent_messages").select("*").order("timestamp", { ascending: false }).limit(8),
-    supabase.from("reminders").select("*").eq("user_id", userId).eq("status", "pending").gte("scheduled_time", today).order("scheduled_time").limit(10),
+    remindersQuery.order("scheduled_time").limit(10),
   ]);
 
   const taskRows = (tasksRes.data ?? []) as Record<string, unknown>[];
@@ -549,7 +565,9 @@ async function handleGetToday(userId: string, res: VercelResponse) {
 }
 
 async function handleGetTasks(userId: string, res: VercelResponse) {
-  const { data } = await supabase.from("tasks").select("*").eq("user_id", userId).is("deleted_at", null).order("created_at");
+  let query = supabase.from("tasks").select("*").eq("user_id", userId).is("deleted_at", null);
+  if (userId === FALLBACK_USER_ID) query = query.gte("created_at", DEMO_RESET_AT);
+  const { data } = await query.order("created_at");
   res.json((data ?? []).map(rowToTask));
 }
 
@@ -559,7 +577,9 @@ async function handleGetProjects(userId: string, res: VercelResponse) {
 }
 
 async function handleGetJournalEntries(userId: string, res: VercelResponse) {
-  const { data } = await supabase.from("journal_entries").select("*").eq("user_id", userId).order("created_at", { ascending: false });
+  let query = supabase.from("journal_entries").select("*").eq("user_id", userId);
+  if (userId === FALLBACK_USER_ID) query = query.gte("created_at", DEMO_RESET_AT);
+  const { data } = await query.order("created_at", { ascending: false });
   res.json((data ?? []).map(rowToJournal));
 }
 
@@ -610,6 +630,7 @@ async function handleStartFocus(userId: string, req: VercelRequest, res: VercelR
     .eq("status", "active");
   const { data: tasks } = await supabase
     .from("tasks").select("*").eq("user_id", userId).in("status", ["todo", "in_progress"])
+    .gte("created_at", userId === FALLBACK_USER_ID ? DEMO_RESET_AT : "1970-01-01T00:00:00.000Z")
     .order("created_at").limit(1);
   const nextTask = tasks?.[0] as Record<string, unknown> | undefined;
   if (nextTask) {
@@ -667,7 +688,9 @@ async function handlePostJournal(userId: string, req: VercelRequest, res: Vercel
 async function handlePostProject(userId: string, req: VercelRequest, res: VercelResponse) {
   const body = req.body as { name: string; lifeArea: string; intention?: string };
   const colors = ["#7f8f7a", "#b08b63", "#a37c74", "#6f8795"];
-  const { data: existing } = await supabase.from("projects").select("id").eq("user_id", userId);
+  let existingQuery = supabase.from("projects").select("id").eq("user_id", userId);
+  if (userId === FALLBACK_USER_ID) existingQuery = existingQuery.gte("created_at", DEMO_RESET_AT);
+  const { data: existing } = await existingQuery;
   const color = colors[(existing?.length ?? 0) % 4];
   const { data } = await supabase.from("projects").insert({
     user_id: userId,
@@ -677,7 +700,9 @@ async function handlePostProject(userId: string, req: VercelRequest, res: Vercel
     description: body.intention?.trim() || "Keep this area visible and easy to act on.",
     status: "active",
   }).select().single();
-  const { data: taskRows } = await supabase.from("tasks").select("*").eq("user_id", userId);
+  let taskQuery = supabase.from("tasks").select("*").eq("user_id", userId);
+  if (userId === FALLBACK_USER_ID) taskQuery = taskQuery.gte("created_at", DEMO_RESET_AT);
+  const { data: taskRows } = await taskQuery;
   await pushEvent("life", `Created project: ${body.name}`);
   res.json(rowToProject(data as Record<string, unknown>, (taskRows ?? []) as Record<string, unknown>[]));
 }
@@ -693,7 +718,9 @@ async function routeItem(userId: string, item: CaptureItem, rawInput: string): P
     return { routedTo: "journal", dueTime: null, title };
   }
   if (item.itemType === "project") {
-    const { data: existing } = await supabase.from("projects").select("id").eq("user_id", userId);
+    let existingQuery = supabase.from("projects").select("id").eq("user_id", userId);
+    if (userId === FALLBACK_USER_ID) existingQuery = existingQuery.gte("created_at", DEMO_RESET_AT);
+    const { data: existing } = await existingQuery;
     const color = ["#7f8f7a", "#b08b63", "#a37c74", "#6f8795"][(existing?.length ?? 0) % 4];
     await supabase.from("projects").insert({ user_id: userId, name: title.slice(0, 42) || "New Project", life_area: "other", color, description: item.description?.trim() || title, status: "active" });
     await pushEvent("capture", `Project: ${title}`);
@@ -709,7 +736,9 @@ async function routeItem(userId: string, item: CaptureItem, rawInput: string): P
     return { routedTo: "reminder", dueTime, title };
   }
   // task (default)
-  const { data: proj } = await supabase.from("projects").select("id").eq("user_id", userId).limit(1);
+  let projectQuery = supabase.from("projects").select("id").eq("user_id", userId);
+  if (userId === FALLBACK_USER_ID) projectQuery = projectQuery.gte("created_at", DEMO_RESET_AT);
+  const { data: proj } = await projectQuery.limit(1);
   await supabase.from("tasks").insert({ user_id: userId, title: title.slice(0, 72) || cleanTitle(rawInput, "task"), description: item.description?.trim() || "Created through capture.", status: "todo", priority: item.priority ?? inferPriority(rawInput), due_time: dueTime, estimated_pomodoros: lower.includes("deep") ? 2 : 1, actual_pomodoros: 0, project_id: proj?.[0]?.id ?? null, tags: ["capture", "ai"], energy_required: lower.includes("deep") ? "high" : "medium" });
   await pushEvent("capture", `Task: ${title}`);
   return { routedTo: "task", dueTime, title };
