@@ -149,6 +149,69 @@ body {
   margin-top: 5px;
 }
 
+.focus-control {
+  display: grid;
+  grid-template-columns: 74px minmax(0, 1fr);
+  gap: 13px;
+  align-items: center;
+  margin: -8px 24px 24px;
+  padding: 13px;
+  background: linear-gradient(135deg, oklch(0.98 0.02 150), oklch(0.985 0.008 80));
+  border: 1px solid var(--hairline);
+  border-radius: 18px;
+  box-shadow: 0 8px 24px rgba(20, 15, 5, 0.05);
+}
+
+.focus-control-ring {
+  --focus-progress: 0deg;
+  display: grid;
+  width: 74px;
+  height: 74px;
+  place-items: center;
+  border-radius: 50%;
+  background:
+    radial-gradient(circle at center, var(--surface) 0 58%, transparent 59%),
+    conic-gradient(var(--accent) var(--focus-progress), oklch(0.91 0.015 150) 0);
+  color: var(--ink);
+  font-family: var(--mono);
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.focus-control-body {
+  min-width: 0;
+}
+
+.focus-control-kicker {
+  font-family: var(--mono);
+  font-size: 10px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--accent);
+  margin-bottom: 4px;
+}
+
+.focus-control-title {
+  overflow: hidden;
+  color: var(--ink);
+  font-size: 15px;
+  font-weight: 550;
+  line-height: 1.25;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.focus-control-btn {
+  margin-top: 9px;
+  border-radius: 100px;
+  background: var(--ink);
+  color: white;
+  font-family: var(--mono);
+  font-size: 11px;
+  letter-spacing: 0.04em;
+  padding: 8px 12px;
+}
+
 /* Time ribbon */
 .time-ribbon-wrap {
   position: relative;
@@ -1308,6 +1371,16 @@ body {
   transition: opacity 0.15s;
 }
 .login-btn:disabled { opacity: 0.45; }
+.login-demo-btn {
+  width: 100%;
+  padding: 13px;
+  border-radius: 12px;
+  background: var(--surface);
+  border: 1px solid var(--hairline);
+  color: var(--ink);
+  font-size: 15px;
+  font-weight: 500;
+}
 .login-hint {
   font-size: 13px;
   color: var(--ink-30);

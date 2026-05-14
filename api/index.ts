@@ -1,11 +1,23 @@
 import type { VercelRequest, VercelResponse } from "@vercel/node";
 import { createClient } from "@supabase/supabase-js";
+import WebSocket from "ws";
 
 const FALLBACK_USER_ID = "00000000-0000-0000-0000-000000000001";
+const SUPABASE_URL = process.env.SUPABASE_URL;
+const SUPABASE_ANON_KEY = process.env.SUPABASE_ANON_KEY;
+
+if (!SUPABASE_URL || !SUPABASE_ANON_KEY) {
+  throw new Error("SUPABASE_URL and SUPABASE_ANON_KEY must be configured.");
+}
 
 const supabase = createClient(
-  process.env.SUPABASE_URL!,
-  process.env.SUPABASE_ANON_KEY!
+  SUPABASE_URL,
+  SUPABASE_ANON_KEY,
+  {
+    realtime: {
+      transport: WebSocket as unknown as typeof globalThis.WebSocket
+    }
+  }
 );
 
 async function getUserId(req: VercelRequest): Promise<string> {
@@ -239,6 +251,188 @@ function inferMood(text: string) {
   return 0;
 }
 
+function sentenceCase(text: string) {
+  const trimmed = text.trim();
+  return trimmed ? trimmed[0].toUpperCase() + trimmed.slice(1) : trimmed;
+}
+
+function cleanSpeech(text: string) {
+  return text
+    .replace(/([a-z])([A-Z])/g, "$1 $2")
+    .replace(/\b(um|uh|like|you know|sort of|kind of|basically|actually|maybe)\b/gi, " ")
+    .replace(/\b(alright|okay|ok)\s+(?:let'?s\s+check\s+)?/gi, " ")
+    .replace(/\bcan\s+we\s+maybe\b/gi, " ")
+    .replace(/\blet'?s\s+check\b/gi, " ")
+    .replace(/\bo\s+clock\b|\bo'?clock\b/gi, " ")
+    .replace(/\bclean\s+th\b/gi, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function extractDueTime(text: string): { dueTime: string | null; needsClarification: boolean; question: string | null } {
+  const lower = text.toLowerCase();
+  const explicit = lower.match(/\b(?:at|by|around|before)\s+(\d{1,2})(?::(\d{2}))?\s*(am|pm)\b/i);
+  const bare = lower.match(/\b(?:at|by|around|before)\s+(\d{1,2})(?::(\d{2}))?\b/i);
+
+  const match = explicit ?? bare;
+  if (match) {
+    let hour = Number(match[1]);
+    const minute = Number(match[2] ?? "0");
+    const suffix = match[3]?.toLowerCase();
+
+    if (suffix === "pm" && hour < 12) hour += 12;
+    if (suffix === "am" && hour === 12) hour = 0;
+    if (!suffix) {
+      if (hour >= 1 && hour <= 6) hour += 12;
+      else if (hour >= 7 && hour <= 11) {
+        return { dueTime: null, needsClarification: true, question: `Did you mean ${hour}:00 AM or ${hour}:00 PM?` };
+      }
+    }
+
+    return {
+      dueTime: `${String(hour).padStart(2, "0")}:${String(minute).padStart(2, "0")}`,
+      needsClarification: false,
+      question: null
+    };
+  }
+
+  if (lower.includes("tonight")) return { dueTime: "20:00", needsClarification: false, question: null };
+  if (lower.includes("this morning")) return { dueTime: "09:00", needsClarification: false, question: null };
+  if (lower.includes("noon") || lower.includes("lunch")) return { dueTime: "12:30", needsClarification: false, question: null };
+  if (lower.includes("afternoon")) return { dueTime: "14:00", needsClarification: false, question: null };
+  if (lower.includes("evening")) return { dueTime: "18:30", needsClarification: false, question: null };
+
+  return { dueTime: null, needsClarification: false, question: null };
+}
+
+function cleanTitle(text: string, itemType: CaptureItem["itemType"] = "task") {
+  const originalLower = cleanSpeech(text).toLowerCase();
+  let title = cleanSpeech(text)
+    .replace(/\b(today|tomorrow|tonight|this morning|this afternoon|this evening)\b/gi, " ")
+    .replace(/\b(?:at|by|around|before)\s+\d{1,2}(?::\d{2})?\s*(?:am|pm)?\b/gi, " ")
+    .replace(/^(please\s+)?(can you\s+)?/i, "")
+    .replace(/^(i|we)\s+(need|should|have|want|gotta|must|plan)\s+(to\s+)?/i, "")
+    .replace(/^(need|should|have|want|gotta|must|plan)\s+(to\s+)?/i, "")
+    .replace(/^remind me\s+(to\s+)?/i, "")
+    .replace(/^(a|an|the)\s+/i, "")
+    .replace(/^to\s+/i, "")
+    .replace(/^do\s+the\s+/i, "do ")
+    .replace(/[.?!]+$/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+
+  if (!title) title = text.trim();
+
+  const lower = title.toLowerCase();
+  if (itemType === "task") {
+    if (originalLower.includes("laundry")) title = "Do laundry";
+    else if (originalLower.includes("meditation") || originalLower.includes("meditate")) title = "Meditate";
+    else if (originalLower.includes("call bhaiya")) title = "Call bhaiya";
+    else if (originalLower.includes("chase") && originalLower.includes("project")) {
+      const topic = originalLower.match(/\b(?:regarding|about|for)\s+(.+)$/i)?.[1]
+        ?.replace(/\bproject\b/gi, " ")
+        .replace(/\s+/g, " ")
+        .trim();
+      title = topic ? `Follow up on ${topic} project` : "Follow up on project";
+    } else if (lower === "laundry" || lower === "the laundry") title = "Do laundry";
+    else if (lower.startsWith("laundry ")) title = `Do ${title}`;
+    else if (lower === "dishes" || lower === "the dishes") title = "Do dishes";
+    else if (lower === "groceries") title = "Buy groceries";
+  } else if (itemType === "journal") {
+    if (originalLower.includes("positive")) title = "Feeling positive";
+    title = title.replace(/^(i am|i'm|im|i feel)\s+/i, "Feeling ");
+    title = title.replace(/^Feeling\s+feeling\s+/i, "Feeling ");
+    if (!/^feeling\b/i.test(title)) title = `Feeling ${title}`;
+  }
+
+  return sentenceCase(title).slice(0, 72);
+}
+
+function isJunkTitle(text: string) {
+  const normalized = cleanSpeech(text)
+    .replace(/[.?!]+$/g, "")
+    .trim()
+    .toLowerCase();
+  if (!normalized) return true;
+  if (normalized.length < 3) return true;
+  return [
+    "i",
+    "i should",
+    "i need",
+    "i need to",
+    "i want",
+    "i want to",
+    "i have to",
+    "should",
+    "need to",
+    "want to",
+    "lets see",
+    "let's see",
+    "this goes"
+  ].includes(normalized);
+}
+
+function hasRawDictationSmell(text: string) {
+  const lower = text.toLowerCase();
+  return /\b(alright|can we maybe|let'?s check|o'?clock|i should$|clean th)\b/i.test(lower)
+    || lower.split(/\s+/).length > 12;
+}
+
+function normalizeCaptureItem(item: CaptureItem): CaptureItem | null {
+  const source = cleanSpeech(item.title ?? "");
+  const context = `${source} ${item.description ?? ""}`.trim();
+  if (isJunkTitle(source)) return null;
+
+  let itemType = item.itemType;
+  if (/\b(feel|feeling|mood|stressed|overwhelmed|burned out|positive|grateful|sad|anxious)\b/i.test(context)
+    && !/\b(call|email|buy|clean|do|send|book|schedule|chase|follow up)\b/i.test(source)) {
+    itemType = "journal";
+  } else if (/\b(start|create|build|launch|make|begin)\b/i.test(context) && /\b(project|goal|habit|routine)\b/i.test(context)) {
+    itemType = "project";
+  } else if (/\bremind me\b/i.test(context)) {
+    itemType = "reminder";
+  } else if (itemType === "journal" && /\b(laundry|call|chase|meditat|groceries|dishes)\b/i.test(source)) {
+    itemType = "task";
+  }
+
+  const time = extractDueTime(context);
+  const cleanedTitle = cleanTitle(source, itemType);
+  if (isJunkTitle(cleanedTitle)) return null;
+
+  return {
+    ...item,
+    itemType,
+    title: cleanedTitle,
+    description: item.description ? cleanSpeech(item.description) : null,
+    dueTime: item.dueTime ?? time.dueTime,
+    needsClarification: item.needsClarification || time.needsClarification,
+    clarificationQuestion: item.clarificationQuestion ?? time.question
+  };
+}
+
+function dedupeCaptureItems(items: CaptureItem[]) {
+  const seen = new Set<string>();
+  return items.filter(item => {
+    const key = `${item.itemType}:${cleanTitle(item.title, item.itemType).toLowerCase()}:${item.dueTime ?? ""}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
+function captureQuality(items: CaptureItem[]) {
+  return items.reduce((score, item) => {
+    const title = item.title ?? "";
+    let itemScore = 4;
+    if (isJunkTitle(title)) itemScore -= 8;
+    if (hasRawDictationSmell(title)) itemScore -= 4;
+    if (title.length > 72) itemScore -= 3;
+    if (item.itemType === "journal") itemScore += 1;
+    if (item.dueTime) itemScore += 1;
+    return score + itemScore;
+  }, 0);
+}
+
 type CaptureItem = {
   itemType: "task" | "journal" | "project" | "reminder";
   title: string;
@@ -247,24 +441,28 @@ type CaptureItem = {
   dueTime?: string | null;  // "HH:MM"
   moodScore?: number | null;
   energyLevel?: number | null;
+  needsClarification?: boolean;
+  clarificationQuestion?: string | null;
 };
 
-const CLASSIFY_SYSTEM = `You are Life OS's voice capture processor. The input is raw speech-to-text dictation — messy, run-on, with filler words. Do two things in order:
+const CLASSIFY_SYSTEM = `You are Life OS's capture processor. The input is raw speech-to-text dictation — messy, run-on, with filler words. Your job is to understand intent, not copy words.
 
-STEP 1 — TRANSCRIBE: Clean the raw speech into clear, natural language. Remove filler words ("I should", "about now", "you know", "so"), fix run-on words (e.g. "goodSo" → separate thoughts), correct obvious speech-to-text errors. Identify each distinct intent.
+STEP 1 — CLEAN: Remove filler phrases ("I need to", "I should", "about now", "you know", "so"), fix run-on words, and identify distinct intents.
 
-STEP 2 — CLASSIFY: For each distinct intent, produce one JSON object.
+STEP 2 — ORGANIZE: For each distinct intent, produce one JSON object that creates the correct Life OS item.
 
 RETURN ONLY a raw JSON array — no markdown, no explanation, nothing else.
 
 Each object must have exactly these fields:
   itemType: "task" | "journal" | "project" | "reminder"
-  title: string  (clean, concise imperative — 2-6 words — NO raw dictation verbatim)
+  title: string  (clean, concise app title — 2-6 words — NEVER raw dictation verbatim)
   description: string | null  (optional extra detail, also cleaned up)
   priority: "critical" | "high" | "medium" | "low" | null  (tasks only; null for all others)
   dueTime: "HH:MM" | null  (24h format; extract from speech; null if no time mentioned)
   moodScore: number | null  (-5 to +5; journal only; null for all others)
   energyLevel: number | null  (1 to 10; journal only; null for all others)
+  needsClarification: boolean
+  clarificationQuestion: string | null
 
 SPLITTING:
 • Each distinct action, feeling, or intention = one separate item
@@ -274,13 +472,20 @@ SPLITTING:
 CLASSIFYING:
 • Action / to-do → task
 • Feeling / reflection / mood / stress / how I feel → journal
-• "start a ...", "build/launch/create ..." → project
+• "start/build/create a project/goal/habit/routine" → project
 • "remind me at [time]" → reminder
+• "I need to do X at 4" is a task, not a reminder, unless the user says "remind me"
 
 TIME EXTRACTION:
 • "at 8pm" → "20:00"   "at 3pm" → "15:00"   "at 10am" → "10:00"
+• "at 4" with no am/pm usually means "16:00" unless context clearly says morning
 • "tonight" → "20:00"  "this morning" → "09:00"  "noon/lunch" → "12:30"
 • "afternoon" → "14:00"  "evening" → "18:30"  "now/soon" → null
+
+CLARIFICATION:
+• If a person/place/project reference is ambiguous ("Sarah", "doctor", "office") and there is not enough context, set needsClarification true and ask one short question.
+• If the time is genuinely ambiguous ("at 8" with no context), ask "Morning or evening?"
+• Do not ask follow-up for simple household tasks like laundry, dishes, cleaning, groceries.
 
 PRIORITY (tasks only):
 • urgent / asap / critical → "critical"
@@ -290,13 +495,21 @@ PRIORITY (tasks only):
 • default → "medium"
 
 TITLE RULES — titles must be clean and short:
+• BAD: "I need to laundry at 4"
+• GOOD: {"itemType":"task","title":"Do laundry","dueTime":"16:00"}
+• BAD: "Alright let's check can we maybe do laundry o'clock clean th"
+• GOOD: {"itemType":"task","title":"Do laundry","dueTime":null}
+• BAD: "I should"
+• GOOD: omit this item completely
+• BAD: "Positive let's see how this goes"
+• GOOD: {"itemType":"journal","title":"Feeling positive","description":"Feeling positive"}
 • BAD: "This works quite goodSo I should do meditation at 8 pm today I should"
-• GOOD: "Meditate at 8pm"
+• GOOD: {"itemType":"task","title":"Meditate","dueTime":"20:00"}
 • BAD: "do someLamp lighting about nowAndI should check on the kids before I sle"
-• GOOD: "Adjust lamp lighting" + "Check on kids before sleep"
+• GOOD: {"itemType":"task","title":"Adjust lamp lighting"} + {"itemType":"task","title":"Check on kids"}
 
 EXAMPLE INPUT:  "grab groceries and call dentist at 2pm I'm feeling really burned out also I want to start learning piano"
-EXAMPLE OUTPUT: [{"itemType":"task","title":"Grab groceries","description":null,"priority":"medium","dueTime":null,"moodScore":null,"energyLevel":null},{"itemType":"task","title":"Call dentist","description":null,"priority":"high","dueTime":"14:00","moodScore":null,"energyLevel":null},{"itemType":"journal","title":"Feeling burned out","description":"Feeling really burned out","priority":null,"dueTime":null,"moodScore":-3,"energyLevel":3},{"itemType":"project","title":"Learn piano","description":"Start learning piano","priority":null,"dueTime":null,"moodScore":null,"energyLevel":null}]`;
+EXAMPLE OUTPUT: [{"itemType":"task","title":"Grab groceries","description":null,"priority":"medium","dueTime":null,"moodScore":null,"energyLevel":null,"needsClarification":false,"clarificationQuestion":null},{"itemType":"task","title":"Call dentist","description":null,"priority":"high","dueTime":"14:00","moodScore":null,"energyLevel":null,"needsClarification":false,"clarificationQuestion":null},{"itemType":"journal","title":"Feeling burned out","description":"Feeling burned out","priority":null,"dueTime":null,"moodScore":-3,"energyLevel":3,"needsClarification":false,"clarificationQuestion":null},{"itemType":"project","title":"Learn piano","description":"Start learning piano","priority":null,"dueTime":null,"moodScore":null,"energyLevel":null,"needsClarification":false,"clarificationQuestion":null}]`;
 
 async function classifyWithOpenRouter(rawInput: string): Promise<CaptureItem[] | null> {
   if (!OPENROUTER_KEY) return null;
@@ -390,6 +603,11 @@ async function handleCompleteTask(userId: string, taskId: string, res: VercelRes
 async function handleStartFocus(userId: string, req: VercelRequest, res: VercelResponse) {
   const body = (req.body ?? {}) as { plannedDuration?: number };
   const plannedDuration = Math.min(120, Math.max(5, Math.round(body.plannedDuration ?? 25)));
+  await supabase
+    .from("focus_sessions")
+    .update({ status: "abandoned", ended_at: now() })
+    .eq("user_id", userId)
+    .eq("status", "active");
   const { data: tasks } = await supabase
     .from("tasks").select("*").eq("user_id", userId).in("status", ["todo", "in_progress"])
     .order("created_at").limit(1);
@@ -410,7 +628,7 @@ async function handleStartFocus(userId: string, req: VercelRequest, res: VercelR
 }
 
 async function handleCompleteFocus(userId: string, sessionId: string, res: VercelResponse) {
-  const { data: session } = await supabase.from("focus_sessions").select("*").eq("id", sessionId).single();
+  const { data: session } = await supabase.from("focus_sessions").select("*").eq("id", sessionId).eq("user_id", userId).single();
   if (session) {
     const s = session as Record<string, unknown>;
     await supabase.from("focus_sessions").update({ status: "completed", ended_at: now() }).eq("id", sessionId);
@@ -464,75 +682,116 @@ async function handlePostProject(userId: string, req: VercelRequest, res: Vercel
   res.json(rowToProject(data as Record<string, unknown>, (taskRows ?? []) as Record<string, unknown>[]));
 }
 
-async function routeItem(userId: string, item: CaptureItem, rawInput: string): Promise<{ routedTo: string; dueTime: string | null }> {
+async function routeItem(userId: string, item: CaptureItem, rawInput: string): Promise<{ routedTo: string; dueTime: string | null; title: string }> {
   const lower = rawInput.toLowerCase();
   const dueTime = item.dueTime ?? null;
+  const title = cleanTitle(item.title, item.itemType);
 
   if (item.itemType === "journal") {
-    await supabase.from("journal_entries").insert({ user_id: userId, entry_type: "freeform", content: item.description?.trim() || item.title, mood_score: item.moodScore ?? inferMood(rawInput), energy_level: item.energyLevel ?? 6 });
-    await pushEvent("capture", `Journal: ${item.title}`);
-    return { routedTo: "journal", dueTime: null };
+    await supabase.from("journal_entries").insert({ user_id: userId, entry_type: "freeform", content: title, mood_score: item.moodScore ?? inferMood(rawInput), energy_level: item.energyLevel ?? 6 });
+    await pushEvent("capture", `Journal: ${title}`);
+    return { routedTo: "journal", dueTime: null, title };
   }
   if (item.itemType === "project") {
     const { data: existing } = await supabase.from("projects").select("id").eq("user_id", userId);
     const color = ["#7f8f7a", "#b08b63", "#a37c74", "#6f8795"][(existing?.length ?? 0) % 4];
-    await supabase.from("projects").insert({ user_id: userId, name: item.title.trim().slice(0, 42) || "New Project", life_area: "other", color, description: item.description?.trim() || item.title, status: "active" });
-    await pushEvent("capture", `Project: ${item.title}`);
-    return { routedTo: "project", dueTime: null };
+    await supabase.from("projects").insert({ user_id: userId, name: title.slice(0, 42) || "New Project", life_area: "other", color, description: item.description?.trim() || title, status: "active" });
+    await pushEvent("capture", `Project: ${title}`);
+    return { routedTo: "project", dueTime: null, title };
   }
   if (item.itemType === "reminder") {
     const today = new Date().toISOString().slice(0, 10);
     const scheduledTime = dueTime ? `${today}T${dueTime}:00` : null;
     if (scheduledTime) {
-      await supabase.from("reminders").insert({ user_id: userId, title: item.title.trim().slice(0, 72), trigger_type: "time", scheduled_time: scheduledTime, action_type: "notification", action_payload: {}, status: "pending" });
-      await pushEvent("capture", `Reminder: ${item.title}`);
+      await supabase.from("reminders").insert({ user_id: userId, title: title.slice(0, 72), trigger_type: "time", scheduled_time: scheduledTime, action_type: "notification", action_payload: {}, status: "pending" });
+      await pushEvent("capture", `Reminder: ${title}`);
     }
-    return { routedTo: "reminder", dueTime };
+    return { routedTo: "reminder", dueTime, title };
   }
   // task (default)
   const { data: proj } = await supabase.from("projects").select("id").eq("user_id", userId).limit(1);
-  await supabase.from("tasks").insert({ user_id: userId, title: item.title.trim().slice(0, 72) || rawInput.slice(0, 72), description: item.description?.trim() || "Created through capture.", status: "todo", priority: item.priority ?? inferPriority(rawInput), due_time: dueTime, estimated_pomodoros: lower.includes("deep") ? 2 : 1, actual_pomodoros: 0, project_id: proj?.[0]?.id ?? null, tags: ["capture", "ai"], energy_required: lower.includes("deep") ? "high" : "medium" });
-  await pushEvent("capture", `Task: ${item.title}`);
-  return { routedTo: "task", dueTime };
+  await supabase.from("tasks").insert({ user_id: userId, title: title.slice(0, 72) || cleanTitle(rawInput, "task"), description: item.description?.trim() || "Created through capture.", status: "todo", priority: item.priority ?? inferPriority(rawInput), due_time: dueTime, estimated_pomodoros: lower.includes("deep") ? 2 : 1, actual_pomodoros: 0, project_id: proj?.[0]?.id ?? null, tags: ["capture", "ai"], energy_required: lower.includes("deep") ? "high" : "medium" });
+  await pushEvent("capture", `Task: ${title}`);
+  return { routedTo: "task", dueTime, title };
 }
 
 function heuristicItems(rawInput: string): CaptureItem[] {
   const lower = rawInput.toLowerCase();
   const items: CaptureItem[] = [];
-  const sentences = rawInput.split(/[,;]|\band\b|\balso\b/i).map(s => s.trim()).filter(Boolean);
+  const organized = cleanSpeech(rawInput)
+    .replace(/\s+\b(i am feeling|i'm feeling|im feeling|i feel)\b/gi, "; $1")
+    .replace(/\s+\b(i want to start|i want to create|start a project|start project|create a project|build a project)\b/gi, "; $1")
+    .replace(/\s+\b(i should|i need to|i have to|i want to)\b/gi, "; $1")
+    .replace(/\s+\b(call|chase)\b/gi, "; $1")
+    .replace(/\s+\bpositive\b/gi, "; positive");
+  const sentences = organized
+    .split(/[,;]|\band\b|\balso\b|\bthen\b|\bplus\b/i)
+    .map(s => s.trim())
+    .filter(Boolean);
   for (const s of sentences) {
     const l = s.toLowerCase();
-    if (l.includes("feel") || l.includes("mood") || l.includes("stressed") || l.includes("overwhelmed") || l.includes("tired") || l.includes("journal")) {
-      items.push({ itemType: "journal", title: s.slice(0, 72), moodScore: inferMood(s), energyLevel: l.includes("tired") ? 3 : 6 });
-    } else if (l.includes("project") || l.includes("goal") || l.includes("start") || l.includes("launch") || l.includes("build")) {
-      items.push({ itemType: "project", title: s.replace(/project|goal|start|launch|build/gi, "").trim().slice(0, 42) || s.slice(0, 42) });
-    } else if (l.includes("remind") && /\d/.test(s)) {
-      const timeMatch = s.match(/(\d{1,2})(?::(\d{2}))?\s*(am|pm)/i);
-      let dueTime: string | null = null;
-      if (timeMatch) {
-        let h = parseInt(timeMatch[1]);
-        const m = parseInt(timeMatch[2] ?? "0");
-        if (timeMatch[3]?.toLowerCase() === "pm" && h < 12) h += 12;
-        if (timeMatch[3]?.toLowerCase() === "am" && h === 12) h = 0;
-        dueTime = `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}`;
-      }
-      items.push({ itemType: "reminder", title: s.slice(0, 72), dueTime });
+    const time = extractDueTime(s);
+    const baseTitle = cleanTitle(s, "task");
+
+    if (isJunkTitle(s) || isJunkTitle(baseTitle)) continue;
+
+    if (time.needsClarification) {
+      items.push({
+        itemType: "task",
+        title: baseTitle,
+        priority: inferPriority(s),
+        dueTime: null,
+        needsClarification: true,
+        clarificationQuestion: time.question
+      });
+      continue;
+    }
+
+    if (l.includes("feel") || l.includes("mood") || l.includes("stressed") || l.includes("overwhelmed") || l.includes("tired") || l.includes("journal") || l.includes("positive")) {
+      items.push({
+        itemType: "journal",
+        title: cleanTitle(s, "journal"),
+        description: cleanSpeech(s),
+        moodScore: inferMood(s),
+        energyLevel: l.includes("tired") ? 3 : 6
+      });
+    } else if (/\b(project|goal|habit|routine)\b/i.test(s) && /\b(start|create|build|launch|make|begin)\b/i.test(s)) {
+      const projectName = s.match(/\b(?:project|goal|habit|routine)\s+(?:to|for|about)\s+(.+)$/i)?.[1] ?? s;
+      items.push({
+        itemType: "project",
+        title: cleanTitle(projectName.replace(/\b(start|create|build|launch|make|begin|project|goal|habit|routine)\b/gi, " "), "project"),
+        description: cleanSpeech(s)
+      });
+    } else if (l.includes("remind") && (time.dueTime || /\d/.test(s))) {
+      items.push({ itemType: "reminder", title: cleanTitle(s, "reminder"), dueTime: time.dueTime });
     } else {
-      const timeMatch = s.match(/(\d{1,2})(?::(\d{2}))?\s*(am|pm)/i);
-      let dueTime: string | null = null;
-      if (timeMatch) {
-        let h = parseInt(timeMatch[1]);
-        const m = parseInt(timeMatch[2] ?? "0");
-        if (timeMatch[3]?.toLowerCase() === "pm" && h < 12) h += 12;
-        if (timeMatch[3]?.toLowerCase() === "am" && h === 12) h = 0;
-        dueTime = `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}`;
-      } else if (l.includes("tonight")) {
-        dueTime = "20:00";
-      }
-      items.push({ itemType: "task", title: s.slice(0, 72), priority: inferPriority(s), dueTime });
+      items.push({ itemType: "task", title: baseTitle, priority: inferPriority(s), dueTime: time.dueTime });
     }
   }
-  return items.length ? items : [{ itemType: "task", title: rawInput.slice(0, 72), priority: inferPriority(rawInput), dueTime: lower.includes("tonight") ? "20:00" : null }];
+  if (items.length) return items;
+  const time = extractDueTime(rawInput);
+  const title = cleanTitle(rawInput, "task");
+  if (isJunkTitle(title)) return [];
+  return [{
+    itemType: "task",
+    title,
+    priority: inferPriority(rawInput),
+    dueTime: time.dueTime ?? (lower.includes("tonight") ? "20:00" : null),
+    needsClarification: time.needsClarification,
+    clarificationQuestion: time.question
+  }];
+}
+
+function organizeCaptureItems(rawInput: string, aiItems: CaptureItem[] | null) {
+  const heuristic = dedupeCaptureItems(heuristicItems(rawInput).map(normalizeCaptureItem).filter(Boolean) as CaptureItem[]);
+  const ai = dedupeCaptureItems((aiItems ?? []).map(normalizeCaptureItem).filter(Boolean) as CaptureItem[]);
+
+  if (!ai.length) return heuristic;
+  if (!heuristic.length) return ai;
+
+  const aiHasRawSmell = ai.some(item => hasRawDictationSmell(item.title));
+  if (aiHasRawSmell || captureQuality(heuristic) > captureQuality(ai)) return heuristic;
+  return ai;
 }
 
 async function handleCapture(userId: string, req: VercelRequest, res: VercelResponse) {
@@ -543,7 +802,26 @@ async function handleCapture(userId: string, req: VercelRequest, res: VercelResp
   let aiItems: CaptureItem[] | null = null;
   try { aiItems = await classifyWithOpenRouter(rawInput); } catch { /* fallback */ }
 
-  const items = (aiItems && aiItems.length > 0) ? aiItems : heuristicItems(rawInput);
+  const items = organizeCaptureItems(rawInput, aiItems);
+  if (!items.length) {
+    res.json({
+      needsClarification: true,
+      clarificationQuestion: "What would you like me to add from that?",
+      items: [],
+      snapshot: await buildSnapshot(userId)
+    });
+    return;
+  }
+  const clarification = items.find(item => item.needsClarification);
+  if (clarification) {
+    res.json({
+      needsClarification: true,
+      clarificationQuestion: clarification.clarificationQuestion ?? `Can you clarify "${cleanTitle(clarification.title, clarification.itemType)}"?`,
+      items: [],
+      snapshot: await buildSnapshot(userId)
+    });
+    return;
+  }
   const results = await Promise.all(items.map(item => routeItem(userId, item, rawInput)));
 
   res.json({ items: results, snapshot: await buildSnapshot(userId) });

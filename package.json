@@ -3,7 +3,8 @@
   "private": true,
   "packageManager": "npm@10.8.2",
   "scripts": {
-    "dev": "concurrently -n api,app -c green,blue \"npm run dev -w @life-os/api\" \"npm run dev -w @life-os/mobile\"",
+    "dev": "concurrently -n api,app -c green,blue \"npm run dev:api\" \"npm run dev -w @life-os/mobile\"",
+    "dev:api": "tsx watch api/dev.ts",
     "typecheck": "tsc --noEmit",
     "build": "turbo build",
     "lint": "turbo lint"

@@ -6,7 +6,7 @@ import "./styles.css";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
-type View = "today" | "tides" | "threads" | "reflect";
+type View = "today" | "tasks" | "projects" | "journal";
 type DrawerType = "task" | "journal" | "project" | "reminder" | null;
 type CapturePhase = "idle" | "listening" | "routed";
 
@@ -116,6 +116,12 @@ function formatShortTime(t: string): string {
   return new Intl.DateTimeFormat("en-AU", { hour: "2-digit", minute: "2-digit", hour12: true }).format(d);
 }
 
+function formatDuration(seconds: number): string {
+  const minutes = Math.floor(seconds / 60);
+  const rest = seconds % 60;
+  return `${minutes}:${String(rest).padStart(2, "0")}`;
+}
+
 function formatHour(h: number) {
   if (h === 0 || h === 24) return "12am";
   if (h === 12) return "12pm";
@@ -156,22 +162,27 @@ function SunIcon() {
   );
 }
 
-function WavesIcon() {
+function TasksIcon() {
   return (
     <svg viewBox="0 0 24 24" {...S}>
-      <path d="M2 8 Q6 5 10 8 Q14 11 18 8 Q20.5 6.5 22 8" />
-      <path d="M2 12 Q6 9 10 12 Q14 15 18 12 Q20.5 10.5 22 12" />
-      <path d="M2 16 Q6 13 10 16 Q14 19 18 16 Q20.5 14.5 22 16" />
+      <path d="M8 6h12" />
+      <path d="M8 12h12" />
+      <path d="M8 18h12" />
+      <path d="M3.5 6l1 1 2-2" />
+      <path d="M3.5 12l1 1 2-2" />
+      <path d="M3.5 18l1 1 2-2" />
     </svg>
   );
 }
 
-function ThreadsIcon() {
+function ProjectsIcon() {
   return (
     <svg viewBox="0 0 24 24" {...S}>
-      <line x1="7"  y1="5"  x2="7"  y2="20" />
-      <line x1="12" y1="3"  x2="12" y2="20" />
-      <line x1="17" y1="8"  x2="17" y2="20" />
+      <rect x="4" y="4" width="7" height="7" rx="1.5" />
+      <rect x="13" y="4" width="7" height="7" rx="1.5" />
+      <rect x="4" y="13" width="7" height="7" rx="1.5" />
+      <path d="M14 17h6" />
+      <path d="M17 14v6" />
     </svg>
   );
 }
@@ -186,7 +197,7 @@ function MoonIcon() {
 
 // ── Login screen ──────────────────────────────────────────────────────────────
 
-function LoginScreen() {
+function LoginScreen({ onDemo, authAvailable }: { onDemo: () => void; authAvailable: boolean }) {
   const [email, setEmail] = useState("");
   const [sent, setSent] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -195,6 +206,10 @@ function LoginScreen() {
   async function handleSend() {
     const trimmed = email.trim();
     if (!trimmed) return;
+    if (!supabase) {
+      setErr("Email sign-in is not configured for this build.");
+      return;
+    }
     setBusy(true);
     setErr(null);
     const { error } = await supabase.auth.signInWithOtp({
@@ -234,7 +249,10 @@ function LoginScreen() {
             <button className="login-btn" disabled={busy || !email.trim()} onClick={handleSend}>
               {busy ? "Sending…" : "Send magic link"}
             </button>
-            <p className="login-hint">No password needed — we'll email you a link.</p>
+            <button className="login-demo-btn" type="button" onClick={onDemo}>
+              Try local demo
+            </button>
+            <p className="login-hint">{authAvailable ? "No password needed — we'll email you a link." : "Auth is not configured here, so demo mode is available."}</p>
           </div>
         )}
       </div>
@@ -246,6 +264,7 @@ function LoginScreen() {
 
 function App() {
   const [session, setSession] = useState<Session | null>(null);
+  const [demoMode, setDemoMode] = useState(false);
   const [authLoading, setAuthLoading] = useState(true);
   const [view, setView] = useState<View>("today");
   const [drawer, setDrawer] = useState<DrawerType>(null);
@@ -257,6 +276,11 @@ function App() {
 
   // ── Auth ──────────────────────────────────────────────────────────────────
   useEffect(() => {
+    if (!supabase) {
+      setDemoMode(true);
+      setAuthLoading(false);
+      return;
+    }
     void supabase.auth.getSession().then(({ data }) => {
       setSession(data.session);
       setAuthLoading(false);
@@ -270,9 +294,9 @@ function App() {
 
   // Reload snapshot whenever session changes (new login or token refresh)
   useEffect(() => {
-    if (session) void loadSnapshot();
+    if (session || demoMode) void loadSnapshot();
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [session?.access_token]);
+  }, [session?.access_token, demoMode]);
 
   // ── Auth-aware fetch ───────────────────────────────────────────────────────
   function authFetch(path: string, options: RequestInit = {}): Promise<Response> {
@@ -301,24 +325,34 @@ function App() {
   async function mutate(path: string, body?: unknown, method = "POST") {
     setBusy(true);
     try {
-      await authFetch(path, {
+      const res = await authFetch(path, {
         method,
         headers: body ? { "Content-Type": "application/json" } : undefined,
         body: body ? JSON.stringify(body) : undefined,
       });
+      if (!res.ok) {
+        const data = await res.json().catch(() => null) as { error?: string } | null;
+        throw new Error(data?.error ?? `Request failed: ${res.status}`);
+      }
       await loadSnapshot();
       setDrawer(null);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Action failed.");
     } finally {
       setBusy(false);
     }
   }
 
   async function deleteTask(id: string) {
-    await authFetch(`/v1/tasks/${id}`, { method: "DELETE" });
+    const res = await authFetch(`/v1/tasks/${id}`, { method: "DELETE" });
+    if (!res.ok) {
+      setError("Could not delete task.");
+      return;
+    }
     await loadSnapshot();
   }
 
-  async function capture(rawInput: string): Promise<{ items: Array<{ routedTo: string; dueTime: string | null }> } | null> {
+  async function capture(rawInput: string): Promise<{ needsClarification?: boolean; clarificationQuestion?: string; items: Array<{ routedTo: string; dueTime: string | null; title?: string }> } | null> {
     setBusy(true);
     try {
       const res = await authFetch("/v1/capture", {
@@ -326,7 +360,7 @@ function App() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ rawInput }),
       });
-      const data = res.ok ? (await res.json() as { items: Array<{ routedTo: string; dueTime: string | null }> }) : null;
+      const data = res.ok ? (await res.json() as { needsClarification?: boolean; clarificationQuestion?: string; items: Array<{ routedTo: string; dueTime: string | null; title?: string }> }) : null;
       await loadSnapshot();
       return data;
     } catch {
@@ -337,7 +371,8 @@ function App() {
   }
 
   async function signOut() {
-    await supabase.auth.signOut();
+    await supabase?.auth.signOut();
+    setDemoMode(false);
     setSnapshot(null);
     setLoading(true);
   }
@@ -345,8 +380,8 @@ function App() {
   if (authLoading) {
     return <div className="center-screen"><p>Opening Life OS</p></div>;
   }
-  if (!session) {
-    return <LoginScreen />;
+  if (!session && !demoMode) {
+    return <LoginScreen authAvailable={Boolean(supabase)} onDemo={() => { setDemoMode(true); setLoading(true); }} />;
   }
   if (loading) {
     return <div className="center-screen"><p>Loading your day…</p></div>;
@@ -360,16 +395,29 @@ function App() {
     );
   }
 
-  const userInitial = (session.user.email ?? "?")[0].toUpperCase();
+  const userInitial = demoMode ? "D" : (session?.user.email ?? "?")[0].toUpperCase();
+
+  async function startFocus(minutes = 25) {
+    await mutate("/v1/focus/sessions", { plannedDuration: minutes });
+  }
+
+  async function completeFocus() {
+    const id = snapshot?.focus.currentSession?.id;
+    if (!id) {
+      setError("No active focus session.");
+      return;
+    }
+    await mutate(`/v1/focus/sessions/${id}/complete`);
+  }
 
   return (
     <div className="app">
-      <button className="user-badge" onClick={signOut} title="Sign out">{userInitial}</button>
+      <button className="user-badge" onClick={signOut} title={demoMode ? "Exit demo" : "Sign out"}>{userInitial}</button>
       <div className="view-area">
-        {view === "today"   && <TodayScreen snapshot={snapshot} onCompleteTask={(id) => mutate(`/v1/tasks/${id}/complete`)} onDeleteTask={deleteTask} />}
-        {view === "tides"   && <TidesScreen snapshot={snapshot} onCompleteTask={(id) => mutate(`/v1/tasks/${id}/complete`)} onDeleteTask={deleteTask} onAddTask={() => setDrawer("task")} />}
-        {view === "threads" && <ThreadsScreen snapshot={snapshot} onAddProject={() => setDrawer("project")} />}
-        {view === "reflect" && <ReflectScreen snapshot={snapshot} onAddJournal={() => setDrawer("journal")} />}
+        {view === "today"   && <TodayScreen snapshot={snapshot} onCompleteTask={(id) => mutate(`/v1/tasks/${id}/complete`)} onDeleteTask={deleteTask} onStartFocus={startFocus} onCompleteFocus={completeFocus} />}
+        {view === "tasks"   && <TasksScreen snapshot={snapshot} onCompleteTask={(id) => mutate(`/v1/tasks/${id}/complete`)} onDeleteTask={deleteTask} onAddTask={() => setDrawer("task")} />}
+        {view === "projects" && <ProjectsScreen snapshot={snapshot} onAddProject={() => setDrawer("project")} />}
+        {view === "journal" && <JournalScreen snapshot={snapshot} onAddJournal={() => setDrawer("journal")} />}
       </div>
 
       <Dock view={view} onViewChange={setView} onCaptureOpen={() => setCaptureOpen(true)} />
@@ -471,7 +519,13 @@ function SwipeableTask({ onDelete, children }: { onDelete: () => void; children:
   );
 }
 
-function TodayScreen({ snapshot, onCompleteTask, onDeleteTask }: { snapshot: Snapshot; onCompleteTask: (id: string) => void; onDeleteTask: (id: string) => void }) {
+function TodayScreen({ snapshot, onCompleteTask, onDeleteTask, onStartFocus, onCompleteFocus }: {
+  snapshot: Snapshot;
+  onCompleteTask: (id: string) => void;
+  onDeleteTask: (id: string) => void;
+  onStartFocus: (minutes?: number) => void;
+  onCompleteFocus: () => void;
+}) {
   const [nowMs, setNowMs] = useState(Date.now());
   useEffect(() => {
     const id = setInterval(() => setNowMs(Date.now()), 30_000);
@@ -498,13 +552,16 @@ function TodayScreen({ snapshot, onCompleteTask, onDeleteTask }: { snapshot: Sna
   const today = snapshot.date;
   const displayName = snapshot.user.displayName || "there";
   const firstName = displayName.split(" ")[0];
+  const focusTask = snapshot.tasks.upcoming.find(t => t.id === snapshot.focus.currentSession?.taskId)
+    ?? snapshot.tasks.upcoming.find(t => t.status === "in_progress")
+    ?? snapshot.tasks.upcoming.find(t => t.status !== "done");
 
   return (
     <div className="today-screen">
       <div className="screen-header">
         <div className="screen-eyebrow">{formatDate(today)}</div>
         <h1 className="screen-title">Good morning,<br /><em>{firstName}.</em></h1>
-        <p className="screen-whisper">One thread at a time.</p>
+        <p className="screen-whisper">One task at a time.</p>
       </div>
 
       <div className="day-stats">
@@ -527,6 +584,13 @@ function TodayScreen({ snapshot, onCompleteTask, onDeleteTask }: { snapshot: Sna
           <span className="day-stat-label">mood</span>
         </div>
       </div>
+
+      <FocusControl
+        session={snapshot.focus.currentSession}
+        taskTitle={focusTask?.title ?? "Open focus"}
+        onStart={() => onStartFocus(25)}
+        onComplete={onCompleteFocus}
+      />
 
       <div className="time-ribbon-wrap">
         <div className="ribbon-bg-line" />
@@ -596,9 +660,43 @@ function TodayScreen({ snapshot, onCompleteTask, onDeleteTask }: { snapshot: Sna
   );
 }
 
-// ── Tides screen ──────────────────────────────────────────────────────────────
+function FocusControl({ session, taskTitle, onStart, onComplete }: {
+  session: Snapshot["focus"]["currentSession"];
+  taskTitle: string;
+  onStart: () => void;
+  onComplete: () => void;
+}) {
+  const [nowMs, setNowMs] = useState(Date.now());
+  useEffect(() => {
+    if (!session) return;
+    const id = setInterval(() => setNowMs(Date.now()), 1000);
+    return () => clearInterval(id);
+  }, [session]);
 
-function TidesScreen({ snapshot, onCompleteTask, onDeleteTask, onAddTask }: {
+  const totalSeconds = (session?.plannedDuration ?? 25) * 60;
+  const elapsedSeconds = session ? Math.max(0, Math.floor((nowMs - Date.parse(session.startedAt)) / 1000)) : 0;
+  const remainingSeconds = session ? Math.max(0, totalSeconds - elapsedSeconds) : totalSeconds;
+  const progress = session ? 1 - remainingSeconds / totalSeconds : 0;
+
+  return (
+    <section className="focus-control">
+      <div className="focus-control-ring" style={{ "--focus-progress": `${Math.round(progress * 360)}deg` } as React.CSSProperties}>
+        <span>{formatDuration(remainingSeconds)}</span>
+      </div>
+      <div className="focus-control-body">
+        <div className="focus-control-kicker">{session ? "Focus running" : "Ready to focus"}</div>
+        <div className="focus-control-title">{taskTitle}</div>
+        <button className="focus-control-btn" onClick={session ? onComplete : onStart}>
+          {session ? "Complete focus" : "Start 25 min"}
+        </button>
+      </div>
+    </section>
+  );
+}
+
+// ── Tasks screen ──────────────────────────────────────────────────────────────
+
+function TasksScreen({ snapshot, onCompleteTask, onDeleteTask, onAddTask }: {
   snapshot: Snapshot;
   onCompleteTask: (id: string) => void;
   onDeleteTask: (id: string) => void;
@@ -612,25 +710,25 @@ function TidesScreen({ snapshot, onCompleteTask, onDeleteTask, onAddTask }: {
   return (
     <div className="tides-screen">
       <div className="screen-header">
-        <div className="screen-eyebrow">{active.length} currents · 3 tides</div>
-        <h1 className="screen-title">What pulls<br /><em>today.</em></h1>
+        <div className="screen-eyebrow">{active.length} open tasks · 3 priorities</div>
+        <h1 className="screen-title">Tasks</h1>
       </div>
 
       <div className="tides-list">
         <TideBand
-          tier="high" label="High tide" sub="do today"
+          tier="high" label="High priority" sub="do today"
           color="var(--amber)" tasks={high}
           projects={snapshot.projects}
           onComplete={onCompleteTask} onDelete={onDeleteTask} onAdd={onAddTask}
         />
         <TideBand
-          tier="mid" label="Mid tide" sub="this week"
+          tier="mid" label="Medium priority" sub="this week"
           color="var(--accent)" tasks={mid}
           projects={snapshot.projects}
           onComplete={onCompleteTask} onDelete={onDeleteTask} onAdd={onAddTask}
         />
         <TideBand
-          tier="low" label="Low tide" sub="someday"
+          tier="low" label="Low priority" sub="someday"
           color="var(--sky)" tasks={low}
           projects={snapshot.projects}
           onComplete={onCompleteTask} onDelete={onDeleteTask} onAdd={onAddTask}
@@ -660,7 +758,7 @@ function TideBand({ tier, label, sub, color, tasks, projects, onComplete, onDele
         <span className="tide-count">{tasks.length}</span>
       </div>
       <div className="tide-tasks">
-        {tasks.length === 0 && <p className="tide-empty">Clear water.</p>}
+        {tasks.length === 0 && <p className="tide-empty">No tasks.</p>}
         {tasks.map(task => {
           const project = projects.find(p => p.id === task.projectId);
           return (
@@ -688,14 +786,14 @@ function TideBand({ tier, label, sub, color, tasks, projects, onComplete, onDele
   );
 }
 
-// ── Threads screen ────────────────────────────────────────────────────────────
+// ── Projects screen ───────────────────────────────────────────────────────────
 
-function ThreadsScreen({ snapshot, onAddProject }: { snapshot: Snapshot; onAddProject: () => void }) {
+function ProjectsScreen({ snapshot, onAddProject }: { snapshot: Snapshot; onAddProject: () => void }) {
   return (
     <div className="threads-screen">
       <div className="screen-header">
-        <div className="screen-eyebrow">{snapshot.projects.length} threads holding the year</div>
-        <h1 className="screen-title">What you're<br /><em>weaving.</em></h1>
+        <div className="screen-eyebrow">{snapshot.projects.length} active projects</div>
+        <h1 className="screen-title">Projects</h1>
       </div>
 
       <div className="ropes-row">
@@ -716,7 +814,7 @@ function ThreadsScreen({ snapshot, onAddProject }: { snapshot: Snapshot; onAddPr
             </div>
           </div>
         ))}
-        <button className="thread-add-btn" onClick={onAddProject}>+ start a new thread</button>
+        <button className="thread-add-btn" onClick={onAddProject}>+ add project</button>
       </div>
     </div>
   );
@@ -740,11 +838,11 @@ function Rope({ project }: { project: Project }) {
   );
 }
 
-// ── Reflect screen ────────────────────────────────────────────────────────────
+// ── Journal screen ────────────────────────────────────────────────────────────
 
 const WEEK_DAYS = ["Sat", "Sun", "Mon", "Tue", "Wed", "Thu", "Fri"];
 
-function ReflectScreen({ snapshot, onAddJournal }: { snapshot: Snapshot; onAddJournal: () => void }) {
+function JournalScreen({ snapshot, onAddJournal }: { snapshot: Snapshot; onAddJournal: () => void }) {
   const mood = snapshot.journal.todayMood;
   const color = moodColor(mood);
 
@@ -752,7 +850,7 @@ function ReflectScreen({ snapshot, onAddJournal }: { snapshot: Snapshot; onAddJo
     <div className="reflect-screen">
       <div className="screen-header">
         <div className="screen-eyebrow">{formatDate(snapshot.date)}</div>
-        <h1 className="screen-title">How was the<br /><em>weather inside?</em></h1>
+        <h1 className="screen-title">Journal</h1>
       </div>
 
       <div className="mood-sphere-wrap">
@@ -767,7 +865,7 @@ function ReflectScreen({ snapshot, onAddJournal }: { snapshot: Snapshot; onAddJo
           role="button"
           aria-label="Log mood"
         />
-        <div className="mood-prompt">tap to log · {moodLabel(mood)}</div>
+        <div className="mood-prompt">tap to log mood · {moodLabel(mood)}</div>
       </div>
 
       <div className="mood-week">
@@ -814,17 +912,16 @@ function ReflectScreen({ snapshot, onAddJournal }: { snapshot: Snapshot; onAddJo
 // ── Capture overlay ───────────────────────────────────────────────────────────
 
 function routeCard(routedTo: string, dueTime: string | null): { icon: string; dest: string } {
-  if (routedTo === "journal")  return { icon: "◑", dest: "Reflect" };
-  if (routedTo === "project")  return { icon: "✦", dest: "Threads" };
+  if (routedTo === "journal")  return { icon: "◑", dest: "Journal" };
+  if (routedTo === "project")  return { icon: "✦", dest: "Projects" };
   if (routedTo === "reminder") return { icon: "⏰", dest: "Reminders" };
-  // task — if it has a time, it pins to Today; otherwise Tides
-  return dueTime ? { icon: "◷", dest: "Today" } : { icon: "⤴", dest: "Tides" };
+  return dueTime ? { icon: "◷", dest: "Today" } : { icon: "⤴", dest: "Tasks" };
 }
 
 function CaptureOverlay({ busy, onClose, onSubmit }: {
   busy: boolean;
   onClose: () => void;
-  onSubmit: (input: string) => Promise<{ items: Array<{ routedTo: string; dueTime: string | null }> } | null>;
+  onSubmit: (input: string) => Promise<{ needsClarification?: boolean; clarificationQuestion?: string; items: Array<{ routedTo: string; dueTime: string | null; title?: string }> } | null>;
 }) {
   const [phase, setPhase] = useState<CapturePhase>("idle");
   const [transcript, setTranscript] = useState("");
@@ -892,15 +989,17 @@ function CaptureOverlay({ busy, onClose, onSubmit }: {
     setPhase("routed");
     setRoutes([]); // show loading state while AI processes
     const result = await onSubmit(transcript);
+    if (result?.needsClarification) {
+      setRoutes([{ dest: "Question", icon: "?", label: result.clarificationQuestion ?? "Can you clarify this?" }]);
+      return;
+    }
     if (result?.items?.length) {
-      // Split transcript into rough per-item labels by sentence count
-      const parts = transcript.split(/[,;]|\band\b|\balso\b/i).map(s => s.trim()).filter(Boolean);
       setRoutes(result.items.map((item, i) => {
         const r = routeCard(item.routedTo, item.dueTime);
-        return { dest: r.dest, icon: r.icon, label: (parts[i] ?? transcript).slice(0, 60) };
+        return { dest: r.dest, icon: r.icon, label: (item.title ?? transcript).slice(0, 60) };
       }));
     } else {
-      setRoutes([{ dest: "Tides", icon: "⤴", label: transcript.slice(0, 60) }]);
+      setRoutes([{ dest: "Tasks", icon: "⤴", label: transcript.slice(0, 60) }]);
     }
   }
 
@@ -1006,8 +1105,8 @@ function Dock({ view, onViewChange, onCaptureOpen }: {
       <button className={`dock-tab${view === "today" ? " active" : ""}`} onClick={() => onViewChange("today")}>
         <SunIcon /><span>Today</span>
       </button>
-      <button className={`dock-tab${view === "tides" ? " active" : ""}`} onClick={() => onViewChange("tides")}>
-        <WavesIcon /><span>Tides</span>
+      <button className={`dock-tab${view === "tasks" ? " active" : ""}`} onClick={() => onViewChange("tasks")}>
+        <TasksIcon /><span>Tasks</span>
       </button>
       <div className="dock-orb-slot">
         <button className="dock-orb" onClick={onCaptureOpen} aria-label="Capture">
@@ -1019,11 +1118,11 @@ function Dock({ view, onViewChange, onCaptureOpen }: {
           </div>
         </button>
       </div>
-      <button className={`dock-tab${view === "threads" ? " active" : ""}`} onClick={() => onViewChange("threads")}>
-        <ThreadsIcon /><span>Threads</span>
+      <button className={`dock-tab${view === "projects" ? " active" : ""}`} onClick={() => onViewChange("projects")}>
+        <ProjectsIcon /><span>Projects</span>
       </button>
-      <button className={`dock-tab${view === "reflect" ? " active" : ""}`} onClick={() => onViewChange("reflect")}>
-        <MoonIcon /><span>Reflect</span>
+      <button className={`dock-tab${view === "journal" ? " active" : ""}`} onClick={() => onViewChange("journal")}>
+        <MoonIcon /><span>Journal</span>
       </button>
     </nav>
   );
@@ -1136,8 +1235,8 @@ function ProjectDrawer({ busy, onClose, onSubmit }: {
   const [lifeArea, setLifeArea] = useState("career");
   const [intention, setIntention] = useState("");
   return (
-    <Drawer title="New thread" onClose={onClose}>
-      <input autoFocus value={name} onChange={e => setName(e.target.value)} placeholder="Thread name" />
+    <Drawer title="New project" onClose={onClose}>
+      <input autoFocus value={name} onChange={e => setName(e.target.value)} placeholder="Project name" />
       <select value={lifeArea} onChange={e => setLifeArea(e.target.value)}>
         {["career", "health", "relationships", "creativity", "finances", "learning", "other"].map(a => (
           <option value={a} key={a}>{a.charAt(0).toUpperCase() + a.slice(1)}</option>
@@ -1145,7 +1244,7 @@ function ProjectDrawer({ busy, onClose, onSubmit }: {
       </select>
       <textarea value={intention} onChange={e => setIntention(e.target.value)} placeholder="What should this protect or move forward?" />
       <button className="drawer-submit-btn" disabled={busy || !name.trim()} onClick={() => onSubmit({ name, lifeArea, intention })}>
-        Start thread
+        Add project
       </button>
     </Drawer>
   );
